@@ -113,4 +113,31 @@ final class BridgeProofTests: XCTestCase {
         XCTAssertThrowsError(try store.requests())
         XCTAssertThrowsError(try store.create(installationID: UUID(), name: "QA"))
     }
+
+    func testCreatePurgesOnlyReadableExpiredProofFiles() throws {
+        let now = Date(), past = now.addingTimeInterval(-400)
+        let live = try store.create(installationID: UUID(), name: "QA", now: now)
+        let stale = try store.create(installationID: UUID(), name: "QA", now: past)
+        try store.approve(stale, now: past)
+        let unsafe = try store.create(installationID: UUID(), name: "QA", now: past)
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: path(unsafe).path)
+        for i in 0..<124 { FileManager.default.createFile(atPath: store.directory.appendingPathComponent("extra-\(i)").path, contents: Data()) }
+        // 128 entries before purging; the two expired readable files make room.
+        _ = try store.create(installationID: UUID(), name: "QA", now: now)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: path(stale).path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: path(stale, "approval").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: path(unsafe).path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: path(live).path))
+    }
+
+    func testAPIStoreRemoveDeletesOnlyIdentifiedFiles() throws {
+        let api = BridgeAPIStore(workspace: root, variant: "debug"), name = UUID().uuidString + ".outbox"
+        try api.remove(name: name)
+        try api.put(["ok": "1"], name: name)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: api.directory.appendingPathComponent(name + ".json").path))
+        try api.remove(name: name); try api.remove(name: name)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: api.directory.appendingPathComponent(name + ".json").path))
+        XCTAssertThrowsError(try api.remove(name: "workspace"))
+        XCTAssertThrowsError(try api.remove(name: UUID().uuidString + ".x/../../escape"))
+    }
 }

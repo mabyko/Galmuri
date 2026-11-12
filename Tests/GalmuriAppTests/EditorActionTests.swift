@@ -129,6 +129,42 @@ final class EditorActionTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: profile.source), original)
     }
 
+    @MainActor
+    func testFormEditRenamesNonWebBookmarkWhenURLIsUnchanged() throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = AppStore(sampleData: true, directory: directory)
+        let profile = try XCTUnwrap(store.profile)
+        let item = try XCTUnwrap(profile.working.nodes.values.first { $0.url != nil })
+        let script = "javascript:void(0)"
+        XCTAssertTrue(store.edit { $0.nodes[item.id]?.url = script })
+        var tree = try XCTUnwrap(store.tree)
+        try BookmarkEditor.edit(&tree, id: item.id, name: "Renamed script", url: script)
+        XCTAssertEqual(tree.nodes[item.id]?.name, "Renamed script")
+        XCTAssertEqual(tree.nodes[item.id]?.url, script)
+        XCTAssertThrowsError(try BookmarkEditor.edit(&tree, id: item.id, name: " ", url: script))
+        XCTAssertThrowsError(try BookmarkEditor.edit(&tree, id: item.id, name: "Changed", url: "chrome://settings"))
+        XCTAssertEqual(tree.nodes[item.id]?.url, script)
+        try BookmarkEditor.edit(&tree, id: item.id, name: "Web again", url: "https://example.test/")
+        XCTAssertEqual(tree.nodes[item.id]?.url, "https://example.test/")
+        let root = try XCTUnwrap(tree.roots.values.first)
+        XCTAssertThrowsError(try BookmarkEditor.edit(&tree, id: root, name: "Root", url: nil))
+
+        // The changes column's per-row comparison must match the full changed-ID set
+        // (removed rows carry the base node and are labelled by isRemovedRow before this check).
+        let removed = try XCTUnwrap(profile.working.nodes.values.first { $0.url != nil && $0.id != item.id })
+        XCTAssertTrue(store.edit { try $0.remove([removed.id]) })
+        let changed = try XCTUnwrap(store.profile?.changedIDs)
+        for navigation in ["all", "changes"] {
+            store.navigation = navigation
+            for row in store.rows where !store.isRemovedRow(row.id) {
+                XCTAssertEqual(store.profile?.base.tree.nodes[row.id] != row, changed.contains(row.id), row.id)
+            }
+        }
+        store.navigation = "changes"
+        XCTAssertTrue(store.rows.contains { store.isRemovedRow($0.id) })
+    }
+
     private func temporaryDirectory() -> URL {
         FileManager.default.temporaryDirectory.appendingPathComponent("GalmuriEditorAction-\(UUID().uuidString)")
     }

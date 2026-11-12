@@ -155,9 +155,41 @@ public struct APIWorkingCopy: Codable, Identifiable, Sendable {
     }
     public mutating func edit(_ mutation: (inout BookmarkTree) throws -> Void) throws {
         var next = working; try mutation(&next)
-        next = Self.semantic(next); try Self.validateTree(next)
+        next = Self.semantic(next)
+        // The extension rejects non-canonical new URLs; URLs unchanged from the Chrome snapshot stay byte-identical,
+        // and URLs saved by earlier edits are not re-checked so one stored URL cannot block unrelated edits.
+        for (id, node) in next.nodes where node.url != nil && node.url != base.nodes[id]?.url && node.url != working.nodes[id]?.url {
+            next.nodes[id]?.url = try node.url.map(Self.canonicalURL)
+        }
+        try Self.validateTree(next)
         guard next.roots == base.roots else { throw GalmuriError.invalid("API protected root") }
         working = next
+    }
+    /// Matches JavaScript `new URL(x).href` for http(s): lowercase scheme, IDNA (punycode) lowercase host, no default port,
+    /// "/" for an empty path, UTF-8 percent-encoding of spaces and non-ASCII. Shapes where Foundation and WHATWG serialise
+    /// differently are rejected instead of guessed: userinfo, IPv6 or non-canonical IPv4 hosts, percent-encoded hosts,
+    /// missing "//", dot path segments, `\ [ ] ^ ` { | }`, control characters, leading/trailing spaces, a stray `%`,
+    /// a second `#`, and `'` in the query.
+    public static func canonicalURL(_ url: String) throws -> String {
+        let invalid = GalmuriError.invalid("enter an http or https URL")
+        guard !url.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7F || "\\[]^`{|}".unicodeScalars.contains($0) }),
+              !url.hasPrefix(" "), !url.hasSuffix(" "), url.filter({ $0 == "#" }).count <= 1,
+              url.range(of: "%(?![0-9A-Fa-f]{2})", options: .regularExpression) == nil,
+              var parts = URLComponents(string: url), let scheme = parts.scheme?.lowercased(), scheme == "http" || scheme == "https",
+              let host = parts.encodedHost?.lowercased(), !host.isEmpty, !host.contains("%"),
+              parts.percentEncodedUser == nil, parts.percentEncodedPassword == nil, parts.percentEncodedQuery?.contains("'") != true,
+              !parts.percentEncodedPath.split(separator: "/").contains(where: { [".", "..", "%2e", ".%2e", "%2e.", "%2e%2e"].contains($0.lowercased()) }),
+              (parts.port ?? 0) <= 65535 else { throw invalid }
+        // WHATWG parses a host ending in a numeric label as IPv4; only the canonical dotted quad serialises unchanged.
+        let labels = host.split(separator: ".", omittingEmptySubsequences: false)
+        if let last = labels.last(where: { !$0.isEmpty }), last.first?.isNumber == true || last.hasPrefix("0x") {
+            guard labels.count == 4, labels.allSatisfy({ label in Int(label).map { 0...255 ~= $0 && String($0) == label } ?? false }) else { throw invalid }
+        }
+        parts.scheme = scheme; parts.encodedHost = host
+        if parts.port == (scheme == "https" ? 443 : 80) { parts.port = nil }
+        if parts.percentEncodedPath.isEmpty { parts.percentEncodedPath = "/" }
+        guard let result = parts.string else { throw invalid }
+        return result
     }
     public static func semantic(_ tree: BookmarkTree) -> BookmarkTree {
         var result = tree
@@ -179,8 +211,13 @@ public struct APIWorkingCopy: Codable, Identifiable, Sendable {
               target.nodes.count <= 10_000, target.roots == base.roots, target == Self.semantic(target) else { throw GalmuriError.invalid("API review identity, size or write capability") }
         try Self.validateTree(target)
         let inverse = Dictionary(uniqueKeysWithValues: mapping.map { ($0.value, $0.key) })
+        let live = try Dictionary(uniqueKeysWithValues: envelope.snapshot.nodes.compactMap { n in n.url.map { (n.id, $0) } })
         for node in target.nodes.values {
             guard node.name.utf16.count <= 4096, (node.url?.utf8.count ?? 0) <= 32768 else { throw GalmuriError.invalid("API edited text size") }
+            // The extension rejects non-canonical sent URLs; URLs saved before canonicalisation must be re-entered. Chrome's own URLs pass unchanged.
+            if let url = node.url, url != inverse[node.id].flatMap({ live[$0] }), (try? Self.canonicalURL(url)) != url {
+                throw GalmuriError.invalid("re-enter the address of \"\(node.name)\" before applying")
+            }
         }
         let job = APIJob(id: UUID(), sessionID: envelope.session.id, installationID: installationID, command: "apply", scope: scope,
                       expected: ChromeAPISnapshot.hash(envelope.raw), desired: target.nodes.values.sorted { $0.id < $1.id }.map {
@@ -263,5 +300,13 @@ public struct BridgeAPIStore: Sendable {
         if lstat(file.path, &info) != 0 { guard errno == ENOENT else { throw GalmuriError.staleSource }; return false }
         guard try get(APIStop.self, name: job.id.uuidString + ".stop") == APIStop(job: job) else { throw GalmuriError.staleSource }
         return true
+    }
+    public func remove(name: String) throws {
+        let target = self.name(name)
+        guard UUID(uuidString: name.split(separator: ".").first.map(String.init) ?? "") != nil,
+              target.deletingLastPathComponent().standardizedFileURL.path == directory.standardizedFileURL.path else { throw GalmuriError.invalid("API file identity") }
+        guard FileManager.default.fileExists(atPath: directory.path) else { return }
+        try files.checkDirectory(create: false)
+        guard unlink(target.path) == 0 || errno == ENOENT else { throw GalmuriError.invalid("API file removal") }
     }
 }

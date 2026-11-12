@@ -2,32 +2,24 @@ import SwiftUI
 import GalmuriCore
 
 struct SettingsView: View {
-    var directory: URL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent(Bundle.main.bundleIdentifier ?? "forked.galmuri.local")
-    var store: AppStore?
-    @State private var fallbackPage = "general"
+    @Bindable var store: AppStore
     @State private var bridgeShowing = false
     @State private var installShowing = false
     @State private var fileReview: ReviewSession?
 
-    private var page: Binding<String> {
-        Binding(get: { store?.settingsNavigation ?? fallbackPage }, set: {
-            if let store { store.settingsNavigation = $0 } else { fallbackPage = $0 }
-        })
-    }
-
     var body: some View {
         NavigationSplitView {
-            List(selection: page) {
+            List(selection: $store.settingsNavigation) {
                 Label("settings.general", systemImage: "gearshape").tag("general")
                 Label("settings.labs", systemImage: "flask").tag("labs")
             }.listStyle(.sidebar).navigationSplitViewColumnWidth(min: 160, ideal: 180, max: 210)
         } detail: {
-            if page.wrappedValue == "labs" { labsContent }
+            if store.settingsNavigation == "labs" { labsContent }
             else {
                 Form {
                     Section {
                         LabeledContent("settings.version", value: (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "") + " (" + (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "") + ")")
-                        LabeledContent("sidebar.profiles") { Text(store?.workspace.profiles.count ?? 0, format: .number) }
+                        LabeledContent("sidebar.profiles") { Text(store.workspace.profiles.count, format: .number) }
                         Text("settings.overviewHelp").foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
                 }.formStyle(.grouped).navigationTitle(L("settings.title"))
@@ -35,22 +27,22 @@ struct SettingsView: View {
         }
         .navigationSplitViewStyle(.balanced).frame(width: 900, height: 680).tint(AppTheme.accent)
         .sheet(isPresented: $installShowing) { ExtensionInstallView() }
-        .sheet(isPresented: $bridgeShowing) { BridgeProofView(directory: directory).frame(width: 580, height: 560) }
-        .sheet(item: $fileReview) { session in if let store { ReviewView(store: store, session: session) } }
-        .onChange(of: store?.labs.apiEnabled) {
-            if store?.labs.apiEnabled == true { Task { await store?.checkRegisteredExtensions() } }
+        .sheet(isPresented: $bridgeShowing) { BridgeProofView(directory: store.directory).frame(width: 580, height: 560) }
+        .sheet(item: $fileReview) { session in ReviewView(store: store, session: session) }
+        .onChange(of: store.labs.apiEnabled) {
+            if store.labs.apiEnabled { Task { await store.checkRegisteredExtensions() } }
             else { bridgeShowing = false; installShowing = false }
         }
-        .onChange(of: store?.labs.fileEnabled) { if store?.labs.fileEnabled != true { fileReview = nil } }
+        .onChange(of: store.labs.fileEnabled) { if !store.labs.fileEnabled { fileReview = nil } }
     }
 
     private var labsContent: some View {
         Form {
             Section {
-                Toggle("labs.apiTitle", isOn: Binding(get: { store?.labs.apiEnabled == true }, set: { _ = store?.setLabOptions(api: $0) })).disabled(store == nil)
-                Toggle("labs.fileTitle", isOn: Binding(get: { store?.labs.fileEnabled == true }, set: { _ = store?.setLabOptions(file: $0) })).disabled(store == nil)
+                Toggle("labs.apiTitle", isOn: Binding(get: { store.labs.apiEnabled }, set: { _ = store.setLabOptions(api: $0) }))
+                Toggle("labs.fileTitle", isOn: Binding(get: { store.labs.fileEnabled }, set: { _ = store.setLabOptions(file: $0) }))
             }
-            if store?.labs.apiEnabled == true {
+            if store.labs.apiEnabled {
                 Section {
                     Text("labs.apiDetail").foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     Text("labs.apiLimit").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -61,11 +53,11 @@ struct SettingsView: View {
                     }
                 }
             }
-            if store?.labs.fileEnabled == true {
+            if store.labs.fileEnabled {
                 Section {
                     Text("labs.fileDetail").foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     Text("labs.fileLimit").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                    Button("labs.fileReview") { fileReview = store?.fileApplyExperimentReview() }.disabled(store?.canReviewFileApplyExperiment != true)
+                    Button("labs.fileReview") { fileReview = store.fileApplyExperimentReview() }.disabled(!store.canReviewFileApplyExperiment)
                 }
             }
             Section {
@@ -73,12 +65,12 @@ struct SettingsView: View {
                 Text("settings.planned").font(.caption.bold()).foregroundStyle(.secondary)
                 Text("settings.encryptedBookmarksDetail").foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
-            if let error = store?.error { Text(verbatim: error).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
+            if let error = store.error { Text(verbatim: error).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
         }.formStyle(.grouped).navigationTitle(L("settings.labs"))
     }
 
     @ViewBuilder private var extensionStatus: some View {
-        if let store, !store.workspace.profiles.isEmpty {
+        if !store.workspace.profiles.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
                     Text("sidebar.profiles").font(.headline)

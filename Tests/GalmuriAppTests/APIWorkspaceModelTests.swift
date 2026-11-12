@@ -35,6 +35,18 @@ import GalmuriCore
         await model.undoEdit(); XCTAssertEqual(model.profile?.working, profile.working)
         XCTAssertEqual(try Data(contentsOf: legacy), before)
     }
+    func testNoOpEditsSkipSaveAndUndoStackIsCapped() async throws {
+        let (root, model, envelope) = try await fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        await model.connect(envelope, scope: "scope")
+        let profile = try XCTUnwrap(model.profile), id = try XCTUnwrap(profile.mapping["a"]), revision = model.workspace.revision
+        await model.edit(expected: profile.id) { try $0.reorderAmongPeers(id, direction: -1) }
+        XCTAssertNil(model.error); XCTAssertEqual(model.workspace.revision, revision); XCTAssertNil(model.undo[profile.id])
+        for index in 0..<105 { await model.edit(expected: profile.id) { $0.nodes[id]?.name = "Edit \(index)" } }
+        XCTAssertEqual(model.undo[profile.id]?.count, 100)
+        model.undo[profile.id] = [try XCTUnwrap(model.profile).working]
+        await model.undoEdit()
+        XCTAssertNil(model.error); XCTAssertEqual(model.undo[profile.id], [])
+    }
     func testStaleEditorAndConcurrentWindowCannotOverwriteNewWork() async throws {
         let (root, model, envelope) = try await fixture();defer { try? FileManager.default.removeItem(at: root) }
         await model.connect(envelope, scope: "scope")

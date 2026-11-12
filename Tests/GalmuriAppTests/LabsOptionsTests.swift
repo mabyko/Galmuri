@@ -23,17 +23,17 @@ import GalmuriCore
         XCTAssertTrue(reopened.setLabOptions(api: false));XCTAssertTrue(reopened.labs.fileEnabled)
         XCTAssertEqual(try Data(contentsOf: store.workspaceURL), before)
     }
-    func testOffStopsPreparedFileApplyAndRestoreWithoutNewBackups() throws {
+    func testOffStopsPreparedFileApplyAndRestoreWithoutNewBackups() async throws {
         let store = fixture(), profile = try XCTUnwrap(store.profile), item = try XCTUnwrap(store.tree?.nodes.values.first { $0.url != nil })
         XCTAssertTrue(store.setLabOptions(file: true))
         XCTAssertTrue(store.edit { try $0.edit(item.id, name: "Apply", url: item.url) })
-        let review = try XCTUnwrap(store.fileApplyExperimentReview());store.loadReview(review);review.acknowledged = true
-        XCTAssertTrue(store.setLabOptions(file: false));store.apply(review)
+        let review = try XCTUnwrap(store.fileApplyExperimentReview());await store.loadReview(review);review.acknowledged = true
+        XCTAssertTrue(store.setLabOptions(file: false));await store.apply(review)
         XCTAssertFalse(review.acknowledged);XCTAssertTrue(store.backups.isEmpty)
         XCTAssertEqual(try Data(contentsOf: profile.source), profile.base.original)
-        XCTAssertTrue(store.setLabOptions(file: true));review.acknowledged = true;store.apply(review)
+        XCTAssertTrue(store.setLabOptions(file: true));review.acknowledged = true;await store.apply(review)
         let receipt = try XCTUnwrap(review.receipt), current = try Data(contentsOf: profile.source), count = store.backups.count
-        XCTAssertTrue(store.setLabOptions(file: false));store.restore(receipt, expectedHash: BookmarkFile.hash(current))
+        XCTAssertTrue(store.setLabOptions(file: false));await store.restore(receipt, expectedHash: BookmarkFile.hash(current))
         XCTAssertEqual(try Data(contentsOf: profile.source), current);XCTAssertEqual(store.backups.count, count)
     }
     func testFailedOptionSaveAndMalformedOptionsStayOffWithoutDamagingWorkspace() throws {

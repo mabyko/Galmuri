@@ -5,7 +5,8 @@ import GalmuriCore
 
 struct APIWorkspaceView: View {
     @State private var model: APIWorkspaceModel
-    @State private var connection = 0
+    @State private var connection: UUID?
+    @State private var exportMessage: String?
     @State private var scope = ""
     @State private var selection = Set<String>()
     @State private var back = [String?]()
@@ -42,6 +43,8 @@ struct APIWorkspaceView: View {
                 DisclosureGroup("api.error") { Text(verbatim: error).textSelection(.enabled) }.foregroundStyle(.orange)
             }
             if let notice = model.notice { Text(L(notice)).foregroundStyle(.secondary) }
+            // model.notice holds localization keys; the export count is already formatted.
+            if let exportMessage { Text(verbatim: exportMessage).foregroundStyle(.secondary) }
             DisclosureGroup("api.connect") { connectionContent }
             if !model.workspace.profiles.isEmpty {
                 Picker("api.scope", selection: $model.selected) {
@@ -54,8 +57,12 @@ struct APIWorkspaceView: View {
                         Button("export.html") {
                             let panel = NSSavePanel(); panel.nameFieldStringValue = "galmuri-api-bookmarks.html"
                             guard panel.runModal() == .OK, let url = panel.url else { return }
-                            do { try ProfileIO.exportHTML(profile.working, under: folder).write(to: url, options: .atomic) }
-                            catch { model.error = error.localizedDescription }
+                            exportMessage = nil
+                            do {
+                                let export = try ProfileIO.exportHTMLSkippingUnsupported(profile.working, under: folder)
+                                try export.data.write(to: url, options: .atomic)
+                                if export.skipped > 0 { exportMessage = localizedCount("export.skippedUnsupportedCount", export.skipped) }
+                            } catch { model.error = error.localizedDescription }
                         }.disabled(model.busy)
                         HStack(spacing: 6) {
                             Button { if let target = back.popLast() { forward.append(folder); navigate(target, record: false) } } label: { Label("navigation.back", systemImage: "chevron.left") }.disabled(back.isEmpty).keyboardShortcut("[", modifiers: .command)
@@ -148,7 +155,7 @@ struct APIWorkspaceView: View {
         .frame(minWidth: 940, idealWidth: 1120, minHeight: 680, idealHeight: 780)
         .task { await model.load() }
         .onDisappear { Task { await model.requestStop() } }
-        .onChange(of: model.selected) { selection = []; folder = nil; search = ""; back = []; forward = []; drag = nil }
+        .onChange(of: model.selected) { selection = []; folder = nil; search = ""; back = []; forward = []; drag = nil; exportMessage = nil }
         .onChange(of: search) { selection = []; drag = nil }
         .onChange(of: model.profile?.working) { selection = []; drag = nil; if folder.flatMap({ tree?.nodes[$0] }) == nil { folder = nil }; back = back.filter { $0 == nil || tree?.nodes[$0!]?.isFolder == true }; forward = forward.filter { $0 == nil || tree?.nodes[$0!]?.isFolder == true } }
         .sheet(item: $editor) { request in APIEditorSheet(request: request, model: model) }
@@ -189,20 +196,25 @@ struct APIWorkspaceView: View {
         VStack(alignment: .leading) {
             Text("api.connectHelp").font(.caption)
             if !model.sources.isEmpty {
-                Picker("api.connection", selection: $connection) { ForEach(Array(model.sources.enumerated()), id: \.offset) { index, source in Text(source.session.name + " · " + source.session.installationID.uuidString.prefix(8)).tag(index) } }
-                if model.sources.indices.contains(connection), let snapshot = try? model.sources[connection].snapshot {
+                Picker("api.connection", selection: $connection) { ForEach(model.sources, id: \.session.id) { source in Text(source.session.name + " · " + source.session.installationID.uuidString.prefix(8)).tag(Optional(source.session.id)) } }
+                if let source = model.sources.first(where: { $0.session.id == connection }), let snapshot = try? source.snapshot {
                     Picker("api.scope", selection: $scope) {
                         Text("api.chooseScope").tag("")
                         ForEach(snapshot.folders) { node in Text(node.title + " · " + node.id).tag(node.id) }
                     }
-                    Button("api.connect") { let source = model.sources[connection], scope = scope; Task { await model.connect(source, scope: scope) } }.disabled(scope.isEmpty || model.busy)
+                    Button("api.connect") { let scope = scope; Task { await model.connect(source, scope: scope) } }.disabled(scope.isEmpty || model.busy)
                 }
             }
         }
+        // Selection follows the session, not its position, so a re-sorted reload cannot bind another browser.
+        .onChange(of: model.sources.map(\.session.id), initial: true) { _, ids in
+            if connection.map({ ids.contains($0) }) != true { connection = ids.first; scope = "" }
+        }
+        .onChange(of: connection) { scope = "" }
     }
-    private func reorder(_ offset: Int) {
+    private func reorder(_ direction: Int) {
         let id = selection.count == 1 ? selection.first : nil, profileID = model.selected
-        Task { await model.edit(expected: profileID) { tree in if let id { try tree.reorder(id, offset: offset) } } }
+        Task { await model.edit(expected: profileID) { tree in if let id { try tree.reorderAmongPeers(id, direction: direction) } } }
     }
     private func dragProvider(_ id: String) -> NSItemProvider? {
         guard editable, let profile = model.profile else { return nil }

@@ -39,6 +39,33 @@ test('API response loss never causes an automatic mutation retry',async()=>{
  const f=fixture(),job=await f.job();job.desired[1].title='Changed';const update=f.api.update;f.api.update=async(...args)=>{await update(...args);throw new Error('lost reply');};
  await assert.rejects(applyJob(job,f.api,f.storage,async()=>{}));assert.equal(f.count(),1);assert.equal(f.state.inflight.state,'intent');
 });
+test('non-canonical new or changed URLs are rejected before the first write',async()=>{
+ for(const url of ['https://example.test','HTTPS://Example.test/x']){
+  const f=fixture(),job=await f.job();job.desired[1].url=url;f.snapshot=await f.api.getTree();
+  assert.throws(()=>desiredTree(job,encodeSnapshot(f.snapshot)),/url/);
+  await assert.rejects(applyJob(job,f.api,f.storage,async()=>{}),/url/);assert.equal(f.count(),0);
+ }
+});
+test('snapshot rejects titles and URLs over the host byte limits',()=>{
+ assert.throws(()=>encodeSnapshot([{id:'0',title:'갈'.repeat(5462),children:[]}]),/snapshot-text-limit/);
+ assert.throws(()=>encodeSnapshot([{id:'0',children:[{id:'1',url:'data:,'+'a'.repeat(32763)}]}]),/snapshot-text-limit/);
+ encodeSnapshot([{id:'0',title:'갈'.repeat(5461),children:[{id:'1',url:'data:,'+'a'.repeat(32762)}]}]);
+});
+test('snapshot rejects node IDs and URLs the host would reject',()=>{
+ assert.throws(()=>encodeSnapshot([{id:'0',children:[{id:'갈'.repeat(43)}]}]),/snapshot-limit/);
+ encodeSnapshot([{id:'0',children:[{id:'갈'.repeat(42)+'ab'}]}]);
+ assert.throws(()=>encodeSnapshot([{id:'0',children:[{id:'1',url:''}]}]),/snapshot-url/);
+ assert.throws(()=>encodeSnapshot([{id:'0',children:[{id:'1',url:'https://example.test/\0'}]}]),/snapshot-url/);
+ assert.throws(()=>encodeSnapshot([{id:'0',children:[{id:'1',url:'https://example.test/',children:[{id:'2'}]}]}]),/snapshot-limit/);
+ assert.throws(()=>encodeSnapshot([{id:'0',url:'https://example.test/',children:[]}]),/snapshot-root/);
+});
+test('punycode hosts are accepted and Unicode hosts rejected before any write',async()=>{
+ for(const url of ['https://xn--bj0bj06e.example/','https://xn--w39as2xu7a.example/']){
+  const f=fixture(),job=await f.job();job.desired[1].url=url;desiredTree(job,encodeSnapshot(await f.api.getTree()));
+ }
+ const f=fixture(),job=await f.job();job.desired[1].url='https://갈무리.example/';
+ await assert.rejects(applyJob(job,f.api,f.storage,async()=>{}),/url/);assert.equal(f.count(),0);
+});
 test('snapshot rejects repeated IDs and excessive depth',()=>{
  assert.throws(()=>encodeSnapshot([{id:'x',children:[{id:'x'}]}]));let root={id:'0',children:[]},n=root;for(let i=1;i<70;i++){n.children=[{id:String(i),children:[]}];n=n.children[0];}assert.throws(()=>encodeSnapshot([root]));
 });

@@ -4,10 +4,10 @@ import GalmuriCore
 @testable import GalmuriApp
 
 @MainActor final class APIWorkspaceRecoveryTests: XCTestCase {
-    private func fixture() async throws -> (URL, APIWorkspaceModel, APIEnvelope) {
+    private func fixture(sessionAge: TimeInterval = 0) async throws -> (URL, APIWorkspaceModel, APIEnvelope) {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).resolvingSymlinksInPath()
         let model = APIWorkspaceModel(directory: root, variant: "debug")
-        let session = try model.proof.create(installationID: UUID(), name: "Synthetic recovery")
+        let session = try model.proof.create(installationID: UUID(), name: "Synthetic recovery", now: Date().addingTimeInterval(-sessionAge))
         try model.proof.approve(session)
         let nodes: [[String: Any]] = [
             ["id":"0", "title":"", "children":["scope"], "managed":false, "syncing":false],
@@ -49,6 +49,19 @@ import GalmuriCore
         XCTAssertNil(model.profile?.pendingJob)
         XCTAssertEqual(try model.store.loadWorkspace().profiles[0].working, before.working)
     }
+    func testCompletedRefreshRemovesItsJobFiles() async throws {
+        let (root, model, envelope) = try await fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        let task = Task { await model.prepare() }; defer { task.cancel() }
+        let job = try await queued(model, session: envelope.session)
+        XCTAssertEqual(job.command, "snapshot")
+        let result = "{\"jobID\":\"\(job.id.uuidString)\",\"state\":\"succeeded\"}"
+        try model.store.put(JSONDecoder().decode(APIJobResult.self, from: Data(result.utf8)), name: job.id.uuidString + ".result")
+        await task.value
+        XCTAssertNil(model.error); XCTAssertNotNil(model.review)
+        let names = try FileManager.default.contentsOfDirectory(atPath: model.store.directory.path)
+        XCTAssertFalse(names.contains { $0.hasPrefix(job.id.uuidString) })
+        XCTAssertTrue(names.contains(envelope.session.id.uuidString + ".snapshot.json"))
+    }
     func testCancelledApplyPersistsPendingBeforeDispatchAndBlocksReopenedEditing() async throws {
         let (root, model, envelope) = try await fixture(); defer { try? FileManager.default.removeItem(at: root) }
         let before = try XCTUnwrap(model.profile)
@@ -68,6 +81,39 @@ import GalmuriCore
         XCTAssertNotNil(reopened.error); XCTAssertEqual(reopened.profile?.working, before.working)
         await reopened.prepare()
         XCTAssertEqual(try reopened.store.get(APIJob.self, name: envelope.session.id.uuidString + ".outbox").id, job.id)
+    }
+    func testApplyNearSessionExpiryIsRefusedBeforeAnyRecoveryState() async throws {
+        let (root, model, envelope) = try await fixture(sessionAge: 240); defer { try? FileManager.default.removeItem(at: root) }
+        let before = try XCTUnwrap(model.profile)
+        let review = try APIReview(profile: before, envelope: envelope); review.acknowledged = true; model.review = review
+        await model.accept()
+        XCTAssertEqual(model.error, GalmuriError.invalid("API connection expires soon; reconnect in Chrome and review again").localizedDescription)
+        XCTAssertNil(model.profile?.pendingJob); XCTAssertEqual(model.profile?.working, before.working)
+        XCTAssertEqual(try model.store.loadWorkspace().profiles[0].working, before.working)
+        let names = try FileManager.default.contentsOfDirectory(atPath: model.store.directory.path)
+        XCTAssertFalse(names.contains { $0.hasSuffix(".before.json") || $0.hasSuffix(".source.json") || $0.hasSuffix(".job.json") })
+    }
+    func testSuccessfulApplyKeepsOneCheckpointAndRemovesJobFiles() async throws {
+        let (root, model, envelope) = try await fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        var value = model.workspace, base = value.profiles[0].base
+        value.profiles[0].history = (0..<3).map { _ in APICheckpoint(id: UUID(), before: base, after: base) }; value.revision = UUID()
+        try model.store.save(value, expectedRevision: model.workspace.revision); await model.load()
+        let before = try XCTUnwrap(model.profile); base = before.base
+        let review = try APIReview(profile: before, envelope: envelope); review.acknowledged = true; model.review = review
+        let task = Task { await model.accept() }; defer { task.cancel() }
+        let job = try await queued(model, session: envelope.session)
+        XCTAssertEqual(job.command, "apply")
+        try model.store.put(APIEnvelope(session: envelope.session, writable: true, raw: envelope.raw.replacingOccurrences(of: "\"A\"", with: "\"Local work\"")),
+                            name: envelope.session.id.uuidString + ".snapshot")
+        let result = try JSONDecoder().decode(APIJobResult.self, from: Data("{\"jobID\":\"\(job.id.uuidString)\",\"state\":\"succeeded\",\"mapping\":{}}".utf8))
+        try model.store.put(result, name: job.id.uuidString + ".operation-0.intent")
+        try model.store.put(result, name: job.id.uuidString + ".result")
+        await task.value
+        XCTAssertNil(model.error); XCTAssertEqual(model.notice, "api.applied"); XCTAssertNil(model.profile?.pendingJob)
+        XCTAssertEqual(model.profile?.history.map(\.id), [job.id]); XCTAssertNotEqual(model.profile?.base, base)
+        let names = try FileManager.default.contentsOfDirectory(atPath: model.store.directory.path)
+        XCTAssertFalse(names.contains { $0.hasPrefix(job.id.uuidString) })
+        XCTAssertTrue(names.contains(envelope.session.id.uuidString + ".snapshot.json"))
     }
     func testDisconnectedSessionDoesNotQueueOrDiscardSavedWork() async throws {
         let (root, model, envelope) = try await fixture(); defer { try? FileManager.default.removeItem(at: root) }
@@ -119,6 +165,7 @@ import GalmuriCore
         XCTAssertEqual(model.profile?.working, before.working)
         let archives = try FileManager.default.contentsOfDirectory(at: model.store.directory, includingPropertiesForKeys: nil).filter { $0.lastPathComponent.hasSuffix(".interrupted.json") }
         XCTAssertEqual(archives.count, 1)
+        XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: model.store.directory.path).contains { $0.hasPrefix(job.id.uuidString) })
         let archived = try model.store.get(APIWorkingCopy.self, name: archives[0].deletingPathExtension().lastPathComponent)
         XCTAssertEqual(archived.working, before.working)
     }

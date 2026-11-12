@@ -80,9 +80,28 @@ final class PreUseTests: XCTestCase {
         await store.acceptRefresh(session); XCTAssertEqual(store.tree, before)
         session.acknowledged = true; await store.acceptRefresh(session); XCTAssertEqual(store.tree, before)
         XCTAssertFalse(session.result!.unresolved.isEmpty)
-        for c in session.result!.conflicts { store.resolve(c.id, side: .ours, in: session) }
+        for c in session.result!.conflicts { await store.resolve(c.id, side: .ours, in: session) }
         session.acknowledged = true; await store.acceptRefresh(session)
         XCTAssertEqual(store.tree?.nodes[item.id]?.name, "Local"); XCTAssertEqual(store.profile?.base.tree.nodes[item.id]?.name, "Browser")
+    }
+    @MainActor func testStaleConflictMergeCannotOverwriteNewerChoice() async throws {
+        let store = store(), item = items(store)[0]
+        XCTAssertTrue(store.edit { try $0.edit(item.id, name: "Local", url: item.url) })
+        try changeSource(store, name: "Browser", item: item.id)
+        await store.refreshProfile(); let session = try XCTUnwrap(store.review)
+        let conflict = try XCTUnwrap(session.result?.unresolved.first), before = session.result
+        let task = Task { await store.resolve(conflict.id, side: .ours, in: session) }
+        var spins = 0
+        while !store.busy, spins < 1_000 { await Task.yield(); spins += 1 }
+        XCTAssertTrue(store.busy)
+        // The merge is suspended off the main actor; a newer choice lands before its result returns.
+        session.resolutions = [conflict.id: .theirs]
+        await task.value
+        XCTAssertEqual(session.resolutions, [conflict.id: .theirs])
+        XCTAssertEqual(session.result?.unresolved.count, before?.unresolved.count)
+        XCTAssertFalse(store.busy)
+        await store.resolve(conflict.id, side: .theirs, in: session)
+        XCTAssertFalse(try XCTUnwrap(session.result).unresolved.contains { $0.id == conflict.id })
     }
     @MainActor func testRefreshRejectsSameBytesSourceReplacementAndPreservesWork() async throws {
         let store = store(), item = items(store)[0]

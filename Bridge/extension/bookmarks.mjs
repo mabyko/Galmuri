@@ -1,13 +1,16 @@
 export function encodeSnapshot(tree) {
-  const nodes = [], seen = new Set();
+  const nodes = [], seen = new Set(), utf8 = new TextEncoder();
   function visit(node, parent, managed, depth) {
-    if (depth > 64 || nodes.length >= 20000 || typeof node.id !== 'string' || !node.id || seen.has(node.id)) throw new Error('snapshot-limit');
+    if (depth > 64 || nodes.length >= 20000 || typeof node.id !== 'string' || !node.id || utf8.encode(node.id).length > 128 || seen.has(node.id) || (node.url != null && node.children?.length)) throw new Error('snapshot-limit');
+    // Same per-node limits as the host's ChromeAPISnapshot.validate().
+    if (utf8.encode(node.title ?? '').length > 16384 || (node.url != null && utf8.encode(node.url).length > 32768)) throw new Error('snapshot-text-limit');
+    if (node.url === '' || node.url?.includes('\0')) throw new Error('snapshot-url');
     seen.add(node.id);
     const inherited = managed || !!node.unmodifiable;
     nodes.push({id:node.id, parent, title:node.title ?? '', url:node.url ?? null, children:(node.children ?? []).map(n=>n.id), folderType:node.folderType ?? null, syncing:typeof node.syncing === 'boolean' ? node.syncing : null, managed:inherited});
     for (const child of node.children ?? []) visit(child,node.id,inherited,depth+1);
   }
-  if (!Array.isArray(tree) || tree.length !== 1) throw new Error('snapshot-root');
+  if (!Array.isArray(tree) || tree.length !== 1 || tree[0]?.url != null) throw new Error('snapshot-root');
   visit(tree[0],null,false,0);
   const text=canonical(nodes); if(new TextEncoder().encode(text).length>=8000000)throw new Error('snapshot-limit');return text;
 }
@@ -30,7 +33,7 @@ export function desiredTree(job, raw) {
     if(typeof n.key!=='string' || desired.has(n.key) || typeof n.title!=='string' || n.title.length>4096 || !Array.isArray(n.children))throw new Error('desired-node');
     n.url??=null;n.parent??=null;n.id??=null;
     if(n.id){const old=live.get(n.id);if(!allowed.has(n.id) || seenIDs.has(n.id) || old.managed || old.syncing!==false || (old.folderType && n.id!==scope.id) || recoveries.has(n.id) || (old.url===null)!==(n.url===null))throw new Error('protected-node');seenIDs.add(n.id);}
-    if(n.url!==null && (!n.id || live.get(n.id).url!==n.url)){const u=new URL(n.url);if(!['http:','https:'].includes(u.protocol)||!u.hostname)throw new Error('url');}
+    if(n.url!==null && (!n.id || live.get(n.id).url!==n.url)){const u=new URL(n.url);if(!['http:','https:'].includes(u.protocol)||!u.hostname||u.href!==n.url)throw new Error('url');}
     if(n.parent===null){if(root || n.id!==scope.id || n.title!==scope.title || n.url!==null)throw new Error('protected-root');root=n.key;}
     desired.set(n.key,n);
   }
@@ -40,10 +43,11 @@ export function desiredTree(job, raw) {
   walk(root,null,0);if(visited.size!==desired.size)throw new Error('desired-orphans');
   // Every changed or removed descendant must be writable, including inherited managed states.
   for(const id of allowed){if(id===scope.id)continue;const n=live.get(id);if(n.managed || n.syncing!==false || n.folderType)throw new Error('read-only-descendant');}
-  return {desired,root,live,allowed,recoveries};
+  return {desired,root,allowed,recoveries};
 }
 export async function applyJob(job, bookmarks, storage, record) {
-  let raw=encodeSnapshot(await bookmarks.getTree());
+  const index=text=>new Map(JSON.parse(text).nodes.map(n=>[n.id,n]));
+  let raw=encodeSnapshot(await bookmarks.getTree()),current=index(raw);
   if(await digest(raw)!==job.expected)throw new Error('stale-before-apply');
   const {desired,root,allowed,recoveries}=desiredTree(job,raw);
   const mapping=Object.assign(Object.create(null),Object.fromEntries([...desired.values()].filter(n=>n.id).map(n=>[n.key,n.id])));
@@ -67,7 +71,7 @@ export async function applyJob(job, bookmarks, storage, record) {
       destination.children.splice(args[1].index??destination.children.length,0,n.id);
     }
     if(canonical(expected)!==after)throw new Error('unexpected-transition');
-    raw=after;
+    raw=after;current=index(raw);
     await record({jobID:job.id,state:'observed',sequence,mapping:key?{[key]:answer.id}:undefined,recovery,detail:kind},'progress');
     sequence++;
     return answer;
@@ -78,17 +82,14 @@ export async function applyJob(job, bookmarks, storage, record) {
       const parentId=mapping[n.parent];
       if(!mapping[key]){const created=await mutate('create',[{parentId,title:n.title,...(n.url!==null?{url:n.url}:{})}],key);mapping[key]=created.id;}
       else{
-        let current=JSON.parse(raw).nodes.find(x=>x.id===mapping[key]);
-        if(current.parent!==parentId)await mutate('move',[current.id,{parentId}]);
-        current=JSON.parse(raw).nodes.find(x=>x.id===mapping[key]);
-        const changes={};if(current.title!==n.title)changes.title=n.title;if(current.url!==n.url)changes.url=n.url;
-        if(Object.keys(changes).length)await mutate('update',[current.id,changes]);
+        if(current.get(mapping[key]).parent!==parentId)await mutate('move',[mapping[key],{parentId}]);
+        const node=current.get(mapping[key]),changes={};if(node.title!==n.title)changes.title=n.title;if(node.url!==n.url)changes.url=n.url;
+        if(Object.keys(changes).length)await mutate('update',[node.id,changes]);
       }
     }
     for(const child of n.children)await place(child);
   }
   await place(root);
-  const current=new Map(JSON.parse(raw).nodes.map(n=>[n.id,n]));
   const keep=new Set(Object.values(mapping)), discarded=new Set();
   function protectRecovery(id){discarded.add(id);for(const c of current.get(id).children)protectRecovery(c);}
   for(const id of recoveries)protectRecovery(id);
@@ -100,11 +101,11 @@ export async function applyJob(job, bookmarks, storage, record) {
   }
   for(const n of desired.values()){
     for(let i=0;i<n.children.length;i++){
-      const parentId=mapping[n.key],id=mapping[n.children[i]],p=JSON.parse(raw).nodes.find(x=>x.id===parentId);
+      const parentId=mapping[n.key],id=mapping[n.children[i]],p=current.get(parentId);
       if(p.children[i]!==id)await mutate('move',[id,{parentId,index:i}]);
     }
   }
-  const final=new Map(JSON.parse(raw).nodes.map(n=>[n.id,n])), excluded=new Set([...recoveries,...(recovery?[recovery]:[])]);
+  const final=current, excluded=new Set([...recoveries,...(recovery?[recovery]:[])]);
   for(const n of desired.values()){
     const actual=final.get(mapping[n.key]);
     if(!actual||actual.title!==n.title||actual.url!==n.url||JSON.stringify(actual.children.filter(id=>!excluded.has(id)))!==JSON.stringify(n.children.map(k=>mapping[k])))throw new Error('final-verification');

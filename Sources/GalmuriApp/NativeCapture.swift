@@ -234,7 +234,7 @@ enum NativeCapture {
         try Data("{}".utf8).write(to: registered.workspace.profiles[1].source.deletingLastPathComponent().appendingPathComponent("Preferences"))
         guard registered.setLabOptions(api: true) else { throw GalmuriError.invalid("registered profiles opt-in") }
         registered.settingsNavigation = "labs"
-        let registeredWindow = NSWindow(contentViewController: NSHostingController(rootView: SettingsView(directory: registered.directory, store: registered)))
+        let registeredWindow = NSWindow(contentViewController: NSHostingController(rootView: SettingsView(store: registered)))
         registeredWindow.isReleasedWhenClosed = false; registeredWindow.center(); registeredWindow.makeKeyAndOrderFront(nil)
         try await settle()
         guard registered.extensionChecks.isEmpty else { throw GalmuriError.invalid("Settings appearance automatically rescanned") }
@@ -477,7 +477,7 @@ enum NativeCapture {
         guard let refresh = feature.review, refresh.mode == .refresh, refresh.result?.unresolved.isEmpty == false else { throw GalmuriError.invalid("refresh conflict missing") }
         try await settle()
         try capture(featureWindow.attachedSheet ?? featureWindow, to: output.appendingPathComponent("refresh-conflicts.png"))
-        for c in refresh.result!.conflicts { feature.resolve(c.id, side: .ours, in: refresh) }
+        for c in refresh.result!.conflicts { await feature.resolve(c.id, side: .ours, in: refresh) }
         refresh.phase = .final
         try await settle()
         try capture(featureWindow.attachedSheet ?? featureWindow, to: output.appendingPathComponent("refresh-review.png"))
@@ -528,7 +528,7 @@ enum NativeCapture {
         store.review = session
         try await settle()
         try capture(window.attachedSheet ?? window, to: output.appendingPathComponent("conflicts.png"))
-        for conflict in prepared.result.conflicts { store.resolve(conflict.id, side: .ours, in: session) }
+        for conflict in prepared.result.conflicts { await store.resolve(conflict.id, side: .ours, in: session) }
         guard session.result?.unresolved.isEmpty == true else { throw GalmuriError.unresolved }
         session.phase = .final
         try await settle()

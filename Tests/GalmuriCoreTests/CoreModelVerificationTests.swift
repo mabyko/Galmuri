@@ -140,6 +140,24 @@ final class CoreModelVerificationTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: url), bytes)
     }
 
+    func testSaveSkipsBaseReparseWhileLoadStillRejectsTamperedBase() throws {
+        let url = try temporaryWorkspace(), file = try SampleData.file()
+        let profile = ConnectedProfile(name: "Synthetic", source: url.deletingLastPathComponent().appendingPathComponent("Bookmarks"), base: file)
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(Workspace(profiles: [profile]))) as? [String: Any])
+        var profiles = try XCTUnwrap(json["profiles"] as? [[String: Any]])
+        var storedBase = try XCTUnwrap(profiles[0]["base"] as? [String: Any])
+        var payload = try XCTUnwrap(storedBase["payload"] as? [String: Any])
+        payload["version"] = 99
+        storedBase["payload"] = payload
+        profiles[0]["base"] = storedBase
+        json["profiles"] = profiles
+        // Decoding directly bypasses `load`, so only the full check can notice the mismatch.
+        let tampered = try JSONDecoder().decode(Workspace.self, from: JSONSerialization.data(withJSONObject: json))
+        XCTAssertThrowsError(try tampered.validate())
+        XCTAssertNoThrow(try tampered.save(to: url))
+        XCTAssertThrowsError(try Workspace.load(from: url))
+    }
+
     func testOversizedWorkspaceSavePreservesPreviousRecoverableFile() throws {
         let url = try temporaryWorkspace()
         var profile = ConnectedProfile(name: "Synthetic", source: url.deletingLastPathComponent().appendingPathComponent("Bookmarks"), base: try SampleData.file())

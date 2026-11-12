@@ -72,5 +72,5 @@ with tempfile.TemporaryDirectory(prefix='galmuri-host-proof-', dir=Path(__file__
         if case=='large-record':
             saved=json.loads(result.read_text());assert saved['jobID'].lower()==job and saved['mapping']==record['mapping'] and saved['state']=='succeeded'
         else:assert not result.exists(),case
-        assert list((workspace/'BridgeProof').iterdir())==[],case
+        assert list((workspace/'BridgeProof').iterdir())==[] and not outbox.exists(),case
 print(json.dumps({'variant':configuration['variant'],'framedHandshakeApprovalAcknowledgement':True,'rejections':13,'chunkedResultLargerThan32KB':True,'disconnectCleanup':True,'bookmarkAccess':True,'apiProtocol':2}))

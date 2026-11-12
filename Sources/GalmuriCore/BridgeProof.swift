@@ -116,6 +116,12 @@ public struct BridgeProofStore: Sendable {
 
     public func create(installationID: UUID, name: String, now: Date = Date()) throws -> BridgeProof {
         try checkDirectory(create: true)
+        // Hard-killed hosts skip their cleanup; purge their expired files so pairing cannot be blocked forever.
+        for name in try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        where [".request.json", ".approval.json", ".verified.json"].contains(where: { name.hasSuffix($0) }) {
+            let entry = directory.appendingPathComponent(name)
+            if let proof = try? read(entry), proof.variant == variant, proof.expires <= now { _ = unlink(entry.path) }
+        }
         guard try FileManager.default.contentsOfDirectory(atPath: directory.path).count < 128 else {
             throw GalmuriError.invalid("too many bridge proof files")
         }

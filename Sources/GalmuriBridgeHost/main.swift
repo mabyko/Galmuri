@@ -54,7 +54,12 @@ func run() throws {
     let api = BridgeAPIStore(workspace: workspace, variant: configuration.variant)
     var session: BridgeProof?
     var approvalDelivered = false
-    defer { if let session { try? store.close(session) } }
+    defer {
+        if let session {
+            try? store.close(session)
+            for suffix in [".snapshot", ".outbox"] { try? api.remove(name: session.id.uuidString + suffix) }
+        }
+    }
     var seen = Set<UUID>()
     var received = Data(), transfer: UUID?, nextPart = 0, totalParts = 0
     var outgoing: (job: APIJob, data: Data, part: Int)?
@@ -112,10 +117,15 @@ func run() throws {
                     guard job.sessionID == session.id, job.installationID == session.installationID,
                           ["snapshot", "adopt"].contains(job.command) || (job.command == "apply" && writable) else { throw GalmuriError.invalid("API job scope") }
                     guard job.command != "apply" || ownerActive(job) else { throw GalmuriError.invalid("API app disconnected") }
-                    let data = try JSONEncoder().encode(job)
-                    guard data.count < 8_000_000 else { throw GalmuriError.invalid("API job size") }
-                    outgoing = (job, data, 0)
-                    issued[job.id] = job
+                    // The host exits when the session expires, so an apply must have time to finish first.
+                    if job.command == "apply", session.expires.timeIntervalSinceNow < 90 {
+                        response["sessionExpiring"] = true
+                    } else {
+                        let data = try JSONEncoder().encode(job)
+                        guard data.count < 8_000_000 else { throw GalmuriError.invalid("API job size") }
+                        outgoing = (job, data, 0)
+                        issued[job.id] = job
+                    }
                 }
                 if var current = outgoing {
                     response["stopped"] = try api.stopRequested(current.job)
@@ -127,24 +137,20 @@ func run() throws {
             } else {
                 guard let payload = request.payload, let bytes = Data(base64Encoded: payload), bytes.count <= 32_000 else { throw GalmuriError.invalid("API result chunk") }
                 let complete: Data
-                if let id = request.transfer, let part = request.part, let total = request.total {
-                    guard total > 0, total <= 256, part >= 0, part < total else { throw GalmuriError.invalid("API record bounds") }
-                    if part == 0 {
-                        guard recordTransfer == nil else { throw GalmuriError.invalid("API record already active") }
-                        recordTransfer = id; recordPart = 0; recordTotal = total; recordCommand = request.command; recordData = Data()
-                    }
-                    guard recordTransfer == id, recordPart == part, recordTotal == total, recordCommand == request.command,
-                          recordData.count + bytes.count < 8_000_000 else { throw GalmuriError.invalid("API record sequence") }
-                    recordData.append(bytes); recordPart += 1
-                    if recordPart < total { complete = Data() }
-                    else { complete = recordData; recordTransfer = nil; recordData = Data(); recordCommand = nil }
-                } else {
-                    guard request.transfer == nil, request.part == nil, request.total == nil, recordTransfer == nil, bytes.count < 32_000 else { throw GalmuriError.invalid("API legacy record") }
-                    complete = bytes
+                guard let id = request.transfer, let part = request.part, let total = request.total,
+                      total > 0, total <= 256, part >= 0, part < total else { throw GalmuriError.invalid("API record bounds") }
+                if part == 0 {
+                    guard recordTransfer == nil else { throw GalmuriError.invalid("API record already active") }
+                    recordTransfer = id; recordPart = 0; recordTotal = total; recordCommand = request.command; recordData = Data()
                 }
+                guard recordTransfer == id, recordPart == part, recordTotal == total, recordCommand == request.command,
+                      recordData.count + bytes.count < 8_000_000 else { throw GalmuriError.invalid("API record sequence") }
+                recordData.append(bytes); recordPart += 1
+                if recordPart < total { complete = Data() }
+                else { complete = recordData; recordTransfer = nil; recordData = Data(); recordCommand = nil }
                 if !complete.isEmpty {
                     let result = try JSONDecoder().decode(APIJobResult.self, from: complete)
-                    guard delivered.contains(result.jobID), ["succeeded", "failed", "uncertain", "stopped", "intent", "observed"].contains(result.state) else { throw GalmuriError.invalid("API result identity") }
+                    guard delivered.contains(result.jobID), ["succeeded", "uncertain", "stopped", "intent", "observed"].contains(result.state) else { throw GalmuriError.invalid("API result identity") }
                     if result.state == "intent", let job = issued[result.jobID], try api.stopRequested(job) {
                         try api.put(APIStop(job: job), name: job.id.uuidString + ".stop-ack")
                         response["stopped"] = true
@@ -152,7 +158,8 @@ func run() throws {
                         if result.state == "intent" {
                             guard let job = issued[result.jobID], ownerActive(job) else { throw GalmuriError.invalid("API app disconnected") }
                         }
-                        if request.command == "progress", let sequence = result.sequence {
+                        if request.command == "progress" {
+                            guard let sequence = result.sequence else { throw GalmuriError.invalid("API operation sequence") }
                             let next = journalNext[result.jobID, default: 0]
                             guard sequence == next, sequence < 40_001,
                                   (result.state == "intent" && !awaitingObservation.contains(result.jobID)) ||
@@ -161,7 +168,7 @@ func run() throws {
                             if result.state == "intent" { awaitingObservation.insert(result.jobID) }
                             else { awaitingObservation.remove(result.jobID); journalNext[result.jobID] = next + 1 }
                         } else {
-                            try api.put(result, name: result.jobID.uuidString + (request.command == "result" ? ".result" : ".progress"))
+                            try api.put(result, name: result.jobID.uuidString + ".result")
                         }
                     }
                 }
@@ -179,6 +186,8 @@ func run() throws {
     }
 }
 
+// A closed Chrome pipe must surface as a thrown write error so `run`'s cleanup runs.
+signal(SIGPIPE, SIG_IGN)
 do { try run() }
 catch {
     FileHandle.standardError.write(Data("Galmuri pairing host rejected or disconnected.\n".utf8))

@@ -39,7 +39,7 @@ test('disconnect rejects pending calls without retries', async () => {
   assert.equal(f.port.sent.requestID,first); assert.equal(f.client.port,null);
 });
 test('invalid names do not open a port and locale copies retain all keys', async () => {
-  for(const name of ['', ' ', 'a'.repeat(81), 'QA\nname']) {
+  for(const name of ['', ' ', 'a'.repeat(81), 'QA\nname', 'QA\u200Dname', 'QA\u0085name']) {
     const f=fixture(); await assert.rejects(f.client.connect('host','debug',name,()=>{})); assert.equal(f.port.sent,undefined);
   }
   const keys=Object.keys(copy('en')).sort();

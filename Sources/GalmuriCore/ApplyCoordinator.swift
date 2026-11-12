@@ -241,20 +241,7 @@ public struct ApplyCoordinator: Sendable {
     }
 
     func openDirectory(_ url: URL) throws -> Int32 {
-        let normalized = url.standardizedFileURL
-        guard url.isFileURL, url.host == nil || url.host == "localhost",
-              normalized.resolvingSymlinksInPath().path == normalized.path else { throw GalmuriError.permission }
-        // Foundation retains system aliases such as /var; resolve those before a no-symlink open.
-        guard let path = realpath(normalized.path, nil) else { throw posixError() }
-        defer { free(path) }
-        var expectedPath = normalized.path
-        for (alias, physical) in [("/var", "/private/var"), ("/tmp", "/private/tmp"), ("/etc", "/private/etc")] {
-            if expectedPath == alias || expectedPath.hasPrefix(alias + "/") {
-                expectedPath = physical + expectedPath.dropFirst(alias.count)
-                break
-            }
-        }
-        guard String(cString: path) == expectedPath else { throw GalmuriError.permission }
+        let path = try ProfileIO.verifiedRealPath(url)
         let fd = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW_ANY | O_CLOEXEC)
         guard fd >= 0 else { throw posixError() }
         return fd

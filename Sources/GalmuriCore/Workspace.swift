@@ -24,11 +24,14 @@ public struct Workspace: Codable, Sendable {
     public var profiles: [ConnectedProfile]
     public init(profiles: [ConnectedProfile] = []) { self.profiles = profiles }
 
-    public func validate() throws {
+    public func validate() throws { try validate(reparsingBase: true) }
+
+    /// Bases are immutable and only built by `BookmarkFile(data:)` or a validated `load`, so `save` skips the re-parse.
+    func validate(reparsingBase: Bool) throws {
         guard version == 1, Set(profiles.map(\.id)).count == profiles.count else { throw GalmuriError.invalid("workspace version or profile identity") }
         for profile in profiles {
             try profile.working.validate()
-            guard try BookmarkFile(data: profile.base.original) == profile.base,
+            guard try !reparsingBase || BookmarkFile(data: profile.base.original) == profile.base,
                   profile.working.roots == profile.base.tree.roots else { throw GalmuriError.invalid("workspace snapshot") }
         }
     }
@@ -40,7 +43,7 @@ public struct Workspace: Codable, Sendable {
     }
 
     public func save(to url: URL) throws {
-        try validate()
+        try validate(reparsingBase: false)
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         let data = try encoder.encode(self)
         guard data.count < 100_000_000 else { throw GalmuriError.invalid("workspace exceeds 100 MB") }

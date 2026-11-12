@@ -128,6 +128,18 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(html.components(separatedBy: "HREF=\"https://example.com/interface\"").count - 1, 2)
     }
 
+    func testHTMLExportSkipsUnsupportedSchemesAndCountsThem() throws {
+        var tree = try SampleData.file().tree
+        let ids = tree.nodes.values.filter { $0.url != nil }.map(\.id).sorted()
+        tree.nodes[ids[0]]?.url = "javascript:alert(1)"; tree.nodes[ids[1]]?.url = "chrome://settings"
+        let export = try ProfileIO.exportHTMLSkippingUnsupported(tree)
+        XCTAssertEqual(export.skipped, 2)
+        let html = String(decoding: export.data, as: UTF8.self)
+        XCTAssertFalse(html.contains("javascript:")); XCTAssertFalse(html.contains("chrome://"))
+        XCTAssertTrue(html.contains("HREF=\"https://"))
+        XCTAssertEqual(try ProfileIO.exportHTML(tree), export.data)
+    }
+
     func testDiscoveryDoesNotFollowLocalStateLinksOrReadOversizeMetadata() throws {
         let root = try temporaryRoot(), profile = root.appendingPathComponent("Default")
         try FileManager.default.createDirectory(at: profile, withIntermediateDirectories: true)

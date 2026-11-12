@@ -51,8 +51,8 @@ folder.mkdir(mode=0o700,exist_ok=True)
 if folder.resolve()!=folder or folder.is_symlink(): raise SystemExit('Redirected host directory')
 manifest=folder/(identity['nativeHost']+'.json')
 body=json.dumps({'name':identity['nativeHost'],'description':'Galmuri dedicated API bridge proof','path':str(launcher),'type':'stdio','allowed_origins':['chrome-extension://'+identity['extensionID']+'/']},indent=2)+'\n'
+if any(path.exists() or path.is_symlink() for path in (launcher,manifest)): raise SystemExit('Proof setup already exists; inspect it instead of overwriting')
 for path,value,mode in [(launcher,text,0o700),(manifest,body,0o600)]:
-    if path.exists() or path.is_symlink(): raise SystemExit('Proof setup already exists; inspect it instead of overwriting')
     fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,mode)
     with os.fdopen(fd,'w') as output: output.write(value)
 print(json.dumps({'nativeHost':identity['nativeHost'],'extensionID':identity['extensionID'],'registeredOnlyInDedicatedRoot':True}))

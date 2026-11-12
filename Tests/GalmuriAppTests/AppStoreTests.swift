@@ -1,22 +1,23 @@
 import XCTest
+import os
 import GalmuriCore
 @testable import GalmuriApp
 
 final class AppStoreTests: XCTestCase {
     @MainActor
-    func testInterruptedApplyExposesBackupAndDamagedReceiptKeepsEditingAvailable() throws {
+    func testInterruptedApplyExposesBackupAndDamagedReceiptKeepsEditingAvailable() async throws {
         let directory = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
-        var restarting = false, checks = 0
-        let store = AppStore(sampleData: true, directory: directory, browserState: { _ in checks += 1; return restarting && checks >= 2 })
+        let state = OSAllocatedUnfairLock(initialState: (restarting: false, checks: 0))
+        let store = AppStore(sampleData: true, directory: directory, browserState: { _ in state.withLock { $0.checks += 1; return $0.restarting && $0.checks >= 2 } })
         XCTAssertTrue(store.setLabOptions(file: true))
         let profile = try XCTUnwrap(store.profile)
         let item = try XCTUnwrap(profile.working.nodes.values.first { $0.url != nil })
         XCTAssertTrue(store.edit { try $0.edit(item.id, name: "Keep my edit", url: item.url) })
         let session = ReviewSession(profileID: profile.id)
-        store.loadReview(session); session.acknowledged = true
-        restarting = true; checks = 0
-        store.apply(session)
+        await store.loadReview(session); session.acknowledged = true
+        state.withLock { $0 = (restarting: true, checks: 0) }
+        await store.apply(session)
         XCTAssertNotNil(store.error)
         XCTAssertEqual(store.backups.count, 1)
         XCTAssertEqual(store.backups.first?.state, "prepared")
@@ -86,7 +87,7 @@ final class AppStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testRealMergeChoicesApplyAndRestoreThroughAppStore() throws {
+    func testRealMergeChoicesApplyAndRestoreThroughAppStore() async throws {
         let directory = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = AppStore(sampleData: true, directory: directory, browserState: { _ in false })
@@ -99,19 +100,25 @@ final class AppStoreTests: XCTestCase {
         try profile.base.serialize(theirs).write(to: profile.source, options: .atomic)
         let beforeApply = try Data(contentsOf: profile.source)
         let session = ReviewSession(profileID: profile.id)
-        store.loadReview(session)
+        await store.loadReview(session)
         let conflict = try XCTUnwrap(session.result?.unresolved.first)
         XCTAssertFalse(session.acknowledged)
-        store.resolve(conflict.id, side: .ours, in: session)
+        await store.resolve(conflict.id, side: .ours, in: session)
         XCTAssertTrue(try XCTUnwrap(session.result).unresolved.isEmpty)
         session.acknowledged = true
-        store.apply(session)
+        await store.apply(session)
         XCTAssertNil(store.error)
         XCTAssertEqual(try ProfileIO.read(profile.source).tree.nodes[item.id]?.name, "App title")
         XCTAssertEqual(store.pendingCount, 0)
         let receipt = try XCTUnwrap(session.receipt)
         XCTAssertEqual(try Data(contentsOf: receipt.backup), beforeApply)
-        store.restore(receipt, expectedHash: try ProfileIO.read(profile.source).fingerprint)
+        let currentHash = try ProfileIO.read(profile.source).fingerprint
+        store.busy = true
+        let skipped = await store.restore(receipt, expectedHash: currentHash)
+        XCTAssertFalse(skipped)
+        store.busy = false
+        let restored = await store.restore(receipt, expectedHash: currentHash)
+        XCTAssertTrue(restored)
         XCTAssertNil(store.error)
         XCTAssertEqual(try Data(contentsOf: profile.source), beforeApply)
         XCTAssertEqual(store.tree?.nodes[item.id]?.name, "App title")
@@ -119,7 +126,31 @@ final class AppStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testReviewApprovalInvalidatedByWorkingCopyOrSourceChanges() throws {
+    func testApplyRefreshesBackupsWhenProfileChangesDuringWrite() async throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = AppStore(sampleData: true, directory: directory, browserState: { _ in false })
+        XCTAssertTrue(store.setLabOptions(file: true))
+        let profile = try XCTUnwrap(store.profile)
+        let item = try XCTUnwrap(profile.working.nodes.values.first { $0.url != nil })
+        XCTAssertTrue(store.edit { try $0.edit(item.id, name: "App title", url: item.url) })
+        let session = ReviewSession(profileID: profile.id)
+        await store.loadReview(session)
+        XCTAssertTrue(try XCTUnwrap(session.result).unresolved.isEmpty)
+        session.acknowledged = true
+        XCTAssertTrue(store.backups.isEmpty)
+        let applying = Task { await store.apply(session) }
+        while !store.busy { await Task.yield() }
+        // apply is suspended in its write; change the stored profile before it resumes.
+        store.workspace.profiles[0].working.nodes[item.id]?.name = "Changed during apply"
+        await applying.value
+        XCTAssertEqual(session.phase, .complete)
+        XCTAssertNotNil(store.error)
+        XCTAssertEqual(store.backups.count, 1)
+    }
+
+    @MainActor
+    func testReviewApprovalInvalidatedByWorkingCopyOrSourceChanges() async throws {
         let directory = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = AppStore(sampleData: true, directory: directory, browserState: { _ in false })
@@ -127,10 +158,10 @@ final class AppStoreTests: XCTestCase {
         let profile = try XCTUnwrap(store.profile)
         let item = try XCTUnwrap(profile.working.nodes.values.first { $0.url != nil })
         let session = ReviewSession(profileID: profile.id)
-        store.loadReview(session)
+        await store.loadReview(session)
         session.acknowledged = true
         XCTAssertTrue(store.edit { try $0.edit(item.id, name: "Changed after review", url: item.url) })
-        store.apply(session)
+        await store.apply(session)
         XCTAssertFalse(session.acknowledged)
         XCTAssertNil(session.receipt)
         XCTAssertEqual(try ProfileIO.read(profile.source).fingerprint, profile.base.fingerprint)
@@ -139,27 +170,27 @@ final class AppStoreTests: XCTestCase {
         var external = profile.base.tree
         try external.edit(item.id, name: "Changed original", url: item.url)
         try profile.base.serialize(external).write(to: profile.source, options: .atomic)
-        store.apply(session)
+        await store.apply(session)
         XCTAssertFalse(session.acknowledged)
         XCTAssertFalse(try XCTUnwrap(session.result).unresolved.isEmpty)
         XCTAssertTrue(store.backups.isEmpty)
     }
 
     @MainActor
-    func testBrowserRestartAndCorruptWorkspacePreserveFiles() throws {
+    func testBrowserRestartAndCorruptWorkspacePreserveFiles() async throws {
         let directory = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
-        var running = false
-        let store = AppStore(sampleData: true, directory: directory, browserState: { _ in running })
+        let running = OSAllocatedUnfairLock(initialState: false)
+        let store = AppStore(sampleData: true, directory: directory, browserState: { _ in running.withLock { $0 } })
         XCTAssertTrue(store.setLabOptions(file: true))
         let profile = try XCTUnwrap(store.profile)
         let session = ReviewSession(profileID: profile.id)
-        store.loadReview(session)
+        await store.loadReview(session)
         session.acknowledged = true
-        running = true
-        store.apply(session)
+        running.withLock { $0 = true }
+        await store.apply(session)
         XCTAssertNil(session.receipt)
-        store.loadReview(session)
+        await store.loadReview(session)
         XCTAssertFalse(session.acknowledged)
         XCTAssertNil(session.result)
         XCTAssertEqual(try ProfileIO.read(profile.source).fingerprint, profile.base.fingerprint)

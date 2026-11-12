@@ -6,7 +6,7 @@ export class ProofClient {
   }
   async connect(host, variant, name, changed) {
     this.disconnect();
-    if (typeof name !== 'string' || !name.trim() || name.trim().length > 80 || /[\x00-\x1f\x7f]/u.test(name)) throw new Error('label');
+    if (typeof name !== 'string' || !name.trim() || name.trim().length > 80 || /[\p{Cc}\p{Cf}]/u.test(name)) throw new Error('label');
     const saved = await this.storage.get('installationID');
     const installationID = saved.installationID ?? this.uuid();
     if (!UUID.test(installationID)) throw new Error('identity');

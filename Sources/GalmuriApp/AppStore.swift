@@ -76,7 +76,7 @@ final class AppStore {
     var undoStacks: [UUID: [BookmarkTree]] = [:]
     var accessIssues = Set<UUID>()
     private var savingDisabled = false
-    private let browserState: ((URL) -> Bool)?
+    private let browserState: (@Sendable (URL) -> Bool)?
 
     let directory: URL
     var workspaceURL: URL { directory.appendingPathComponent("workspace.json") }
@@ -153,7 +153,7 @@ final class AppStore {
         profile.source.isFileURL && profile.source.standardizedFileURL.path.hasPrefix(testRoot.path + "/")
     }
 
-    init(sampleData: Bool = false, directory: URL? = nil, browserState: ((URL) -> Bool)? = nil) {
+    init(sampleData: Bool = false, directory: URL? = nil, browserState: (@Sendable (URL) -> Bool)? = nil) {
         self.browserState = browserState
         self.directory = (directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent(Bundle.main.bundleIdentifier ?? "forked.galmuri.local")).standardizedFileURL
         do {
@@ -300,13 +300,22 @@ final class AppStore {
     }
 
     func reorder(_ id: String, direction: Int) {
-        guard direction == -1 || direction == 1, let tree, let node = tree.nodes[id],
-              let siblings = node.parent.flatMap({ tree.nodes[$0]?.children }),
-              let from = siblings.firstIndex(of: id) else { return }
-        let peers = siblings.filter { tree.nodes[$0]?.isFolder == node.isFolder }
-        guard let index = peers.firstIndex(of: id), peers.indices.contains(index + direction),
-              let to = siblings.firstIndex(of: peers[index + direction]) else { return }
-        edit { try $0.reorder(id, offset: to - from) }
+        edit { _ = try $0.reorderAmongPeers(id, direction: direction) }
+    }
+
+    /// Keep the 10 newest `<prefix><UUID>.json` archives (only superseded `BeforeRefresh-` snapshots; other archives are the sole copy of removed work) in `directory`; deletion failures are ignored.
+    private func pruneArchives(_ prefix: String, keeping written: URL) {
+        let keys: Set<URLResourceKey> = [.isRegularFileKey, .contentModificationDateKey]
+        guard let entries = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: Array(keys)) else { return }
+        let archives = entries.compactMap { url -> (url: URL, date: Date)? in
+            let name = url.lastPathComponent
+            guard name != written.lastPathComponent, name.hasPrefix(prefix), name.hasSuffix(".json") else { return nil }
+            let id = String(name.dropFirst(prefix.count).dropLast(5))
+            guard UUID(uuidString: id)?.uuidString == id,
+                  let values = try? url.resourceValues(forKeys: keys), values.isRegularFile == true else { return nil }
+            return (url, values.contentModificationDate ?? .distantPast)
+        }.sorted { $0.date > $1.date }
+        for archive in archives.dropFirst(9) { try? FileManager.default.removeItem(at: archive.url) }
     }
 
     func bookmarkURL(_ id: String) -> URL? {
@@ -379,9 +388,10 @@ final class AppStore {
         let before = workspace.profiles[index].working
         do {
             var next = before; try operation(&next); try next.validate()
+            if next == before { return true }
             workspace.profiles[index].working = next
             do { try persist() } catch { workspace.profiles[index].working = before; throw error }
-            undoStacks[id, default: []].append(before)
+            undoStacks[id] = Array((undoStacks[id] ?? []).suffix(99)) + [before]
             if !validLocation(navigation) { navigation = "all" }
             selection.formIntersection(rows.map(\.id))
             message = L("status.savedLocally")
@@ -568,12 +578,28 @@ final class AppStore {
     func withAccess<T>(_ profile: ConnectedProfile, operation: () throws -> T) throws -> T {
         do {
             let value = try Self.scopedRead(profile, localTest: coordinator.canWrite(profile.source), operation: operation); accessIssues.remove(profile.id); return value
-        } catch {
-            let nsError = error as NSError
-            let posixAccessFailure = nsError.domain == NSPOSIXErrorDomain && [POSIXErrorCode.EACCES, .EPERM, .ENOENT, .ELOOP].contains { Int($0.rawValue) == nsError.code }
-            if error as? GalmuriError == .permission || posixAccessFailure || nsError.domain == NSCocoaErrorDomain && [NSFileReadNoPermissionError, NSFileReadNoSuchFileError, NSFileNoSuchFileError].contains(nsError.code) { accessIssues.insert(profile.id) }
-            throw error
-        }
+        } catch { noteAccessFailure(error, for: profile.id); throw error }
+    }
+
+    /// `withAccess` off the main actor: the scoped bookmark is started and stopped on the worker thread that reads.
+    private func withDetachedAccess<T: Sendable>(_ profile: ConnectedProfile, operation: @escaping @Sendable (ApplyCoordinator) throws -> T) async throws -> T {
+        let coordinator = coordinator, local = coordinator.canWrite(profile.source)
+        do {
+            let value = try await Task.detached { try Self.scopedRead(profile, localTest: local) { try operation(coordinator) } }.value
+            accessIssues.remove(profile.id); return value
+        } catch { noteAccessFailure(error, for: profile.id); throw error }
+    }
+
+    private func noteAccessFailure(_ error: Error, for id: UUID) {
+        let nsError = error as NSError
+        let posixAccessFailure = nsError.domain == NSPOSIXErrorDomain && [POSIXErrorCode.EACCES, .EPERM, .ENOENT, .ELOOP].contains { Int($0.rawValue) == nsError.code }
+        if error as? GalmuriError == .permission || posixAccessFailure || nsError.domain == NSCocoaErrorDomain && [NSFileReadNoPermissionError, NSFileReadNoSuchFileError, NSFileNoSuchFileError].contains(nsError.code) { accessIssues.insert(id) }
+    }
+
+    /// True when the stored profile still has the source, base and working copy captured in `snapshot`.
+    private func isCurrent(_ snapshot: ConnectedProfile) -> Bool {
+        guard let current = workspace.profiles.first(where: { $0.id == snapshot.id }) else { return false }
+        return current.source == snapshot.source && current.base == snapshot.base && current.working == snapshot.working
     }
 
     nonisolated private static func scopedRead<T>(_ profile: ConnectedProfile, localTest: Bool, operation: () throws -> T) throws -> T {
@@ -643,6 +669,7 @@ final class AppStore {
             let before = workspace.profiles[index]
             let archive = directory.appendingPathComponent("BeforeRefresh-" + UUID().uuidString + ".json")
             try workspace.save(to: archive)
+            pruneArchives("BeforeRefresh-", keeping: archive)
             workspace.profiles[index].base = latest; workspace.profiles[index].working = result.tree
             workspace.profiles[index].sourceRestriction = restriction
             do { try persist() } catch { workspace.profiles[index] = before; throw error }
@@ -661,6 +688,16 @@ final class AppStore {
         return BrowserUsage.isRunning(for: source)
     }
 
+    /// Browser check the coordinator can call from a worker thread during a commit.
+    private var sendableBrowserCheck: @Sendable (URL) -> Bool {
+        if let browserState { return browserState }
+        return { source in
+            // BrowserUsage reads NSWorkspace on the main actor; the caller is suspended in an await, so main is free.
+            Thread.isMainThread ? MainActor.assumeIsolated { BrowserUsage.isRunning(for: source) }
+                : DispatchQueue.main.sync { MainActor.assumeIsolated { BrowserUsage.isRunning(for: source) } }
+        }
+    }
+
     var canReviewFileApplyExperiment: Bool {
         guard !busy, review == nil, connection == nil, let profile else { return false }
         return labs.fileEnabled && profile.hasChanges && coordinator.canWrite(profile.source) &&
@@ -672,13 +709,21 @@ final class AppStore {
         return ReviewSession(profileID: profile.id)
     }
 
-    func loadReview(_ session: ReviewSession) {
+    func loadReview(_ session: ReviewSession) async {
+        guard !busy else { return }
+        busy = true; defer { busy = false }
+        await reloadReview(session)
+    }
+
+    /// Callers hold `busy`.
+    private func reloadReview(_ session: ReviewSession) async {
         session.acknowledged = false; session.resolutions = [:]; session.result = nil
         session.latest = nil; session.workingAtReview = nil; session.sourceIdentity = nil; session.phase = .exit
         guard let p = workspace.profiles.first(where: { $0.id == session.profileID }) else { return }
         do {
             if coordinator.canWrite(p.source), browserRunning(for: p.source) { throw GalmuriError.browserRunning }
-            let prepared = try withAccess(p) { try coordinator.prepare(profile: p) }
+            let prepared = try await withDetachedAccess(p) { try $0.prepare(profile: p) }
+            guard isCurrent(p) else { throw GalmuriError.staleSource }
             session.latest = prepared.latest; session.result = prepared.result; session.resolutions = [:]
             session.workingAtReview = p.working
             session.sourceIdentity = prepared.sourceIdentity
@@ -686,54 +731,82 @@ final class AppStore {
         } catch { self.error = error.localizedDescription }
     }
 
-    func resolve(_ conflict: String, side: MergeSide, in session: ReviewSession) {
+    func resolve(_ conflict: String, side: MergeSide, in session: ReviewSession) async {
         if session.mode == .refresh && !matchesRefresh(session) { error = L("editor.staleAction"); return }
-        guard let p = workspace.profiles.first(where: { $0.id == session.profileID }), let latest = session.latest else { return }
+        guard !busy, let p = workspace.profiles.first(where: { $0.id == session.profileID }), let latest = session.latest else { return }
+        busy = true; defer { busy = false }
+        let previous = session.resolutions
+        var choices = previous; choices[conflict] = side
         do {
-            var choices = session.resolutions; choices[conflict] = side
-            let result = try MergeEngine.merge(base: p.base.tree, ours: p.working, theirs: latest.tree, resolutions: choices)
+            let result = try await Task.detached { [choices] in try MergeEngine.merge(base: p.base.tree, ours: p.working, theirs: latest.tree, resolutions: choices) }.value
+            // A result computed for older choices or an older snapshot must not replace a newer state.
+            guard session.resolutions == previous, session.latest == latest, isCurrent(p),
+                  session.mode != .refresh || matchesRefresh(session) else { error = L("editor.staleAction"); return }
             session.resolutions = choices; session.result = result; session.acknowledged = false
         } catch { self.error = error.localizedDescription }
     }
 
-    func apply(_ session: ReviewSession) {
+    func apply(_ session: ReviewSession) async {
         guard labs.fileEnabled else { session.acknowledged = false; error = L("labs.fileDisabled"); return }
-        guard session.acknowledged, let index = workspace.profiles.firstIndex(where: { $0.id == session.profileID }), let latest = session.latest, let result = session.result else { return }
+        guard !busy, session.acknowledged, let index = workspace.profiles.firstIndex(where: { $0.id == session.profileID }), let latest = session.latest, let result = session.result else { return }
+        busy = true; defer { busy = false }
         let p = workspace.profiles[index]
-        guard p.working == session.workingAtReview else { loadReview(session); self.error = L("apply.sourceChanged"); return }
+        guard p.working == session.workingAtReview else { await reloadReview(session); self.error = L("apply.sourceChanged"); return }
+        let coordinator = coordinator, check = sendableBrowserCheck
+        let review = ApplyReview(latest: latest, result: result, sourceIdentity: session.sourceIdentity)
         do {
-            let receipt = try coordinator.apply(profile: p, review: ApplyReview(latest: latest, result: result, sourceIdentity: session.sourceIdentity), browserRunning: { self.browserRunning(for: p.source) })
+            let receipt = try await Task.detached { try coordinator.apply(profile: p, review: review, browserRunning: { check(p.source) }) }.value
             session.receipt = receipt; session.phase = .complete
             do {
-                let after = try ProfileIO.read(p.source)
+                let after = try await Task.detached { try ProfileIO.read(p.source) }.value
+                // The file is written either way; only adopt it when the stored profile is still the one applied.
+                guard isCurrent(p), let index = workspace.profiles.firstIndex(where: { $0.id == p.id }) else { try? refreshBackups(); throw GalmuriError.staleSource }
                 workspace.profiles[index].base = after; workspace.profiles[index].working = after.tree; undoStacks[p.id] = []
                 try refreshBackups(); try persist()
             } catch { self.error = L("result.fileVerified") + "\n" + error.localizedDescription }
         } catch GalmuriError.staleSource {
-            loadReview(session); self.error = L("apply.sourceChanged")
+            await reloadReview(session); self.error = L("apply.sourceChanged")
         } catch {
             self.error = error.localizedDescription
             try? refreshBackups()
         }
     }
 
-    func restore(_ receipt: BackupReceipt, expectedHash: String, expectedIdentity: ApplySourceIdentity? = nil) {
-        guard labs.fileEnabled else { error = L("labs.fileDisabled"); return }
+    /// Returns true only when the restore completed.
+    @discardableResult
+    func restore(_ receipt: BackupReceipt, expectedHash: String, expectedIdentity: ApplySourceIdentity? = nil) async -> Bool {
+        guard labs.fileEnabled else { error = L("labs.fileDisabled"); return false }
+        guard !busy else { return false }
+        busy = true; defer { busy = false }
+        let coordinator = coordinator, check = sendableBrowserCheck
+        let tracked = workspace.profiles.contains { $0.source == receipt.source }
         do {
-            _ = try coordinator.restore(receipt, expectedCurrentHash: expectedHash, expectedCurrentIdentity: expectedIdentity, browserRunning: { self.browserRunning(for: receipt.source) })
-            if let index = workspace.profiles.firstIndex(where: { $0.source == receipt.source }) {
-                workspace.profiles[index].base = try ProfileIO.read(receipt.source)
+            let restored = try await Task.detached { () throws -> BookmarkFile? in
+                _ = try coordinator.restore(receipt, expectedCurrentHash: expectedHash, expectedCurrentIdentity: expectedIdentity, browserRunning: { check(receipt.source) })
+                return try tracked ? ProfileIO.read(receipt.source) : nil
+            }.value
+            if let restored, let index = workspace.profiles.firstIndex(where: { $0.source == receipt.source }) {
+                workspace.profiles[index].base = restored
             }
             try refreshBackups(); try persist(); message = L("backup.restoredWorkingCopyKept")
-        } catch { self.error = error.localizedDescription; try? refreshBackups() }
+            return true
+        } catch { self.error = error.localizedDescription; try? refreshBackups(); return false }
     }
 
     func exportHTML() {
-        guard let tree else { return }
+        guard tree != nil else { return }
         let panel = NSSavePanel(); panel.nameFieldStringValue = "galmuri-bookmarks.html"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        do { try ProfileIO.exportHTML(tree, under: folder).write(to: url, options: .atomic) }
-        catch { self.error = error.localizedDescription }
+        exportHTML(to: url)
+    }
+
+    func exportHTML(to url: URL) {
+        guard let tree else { return }
+        do {
+            let export = try ProfileIO.exportHTMLSkippingUnsupported(tree, under: folder)
+            try export.data.write(to: url, options: .atomic)
+            if export.skipped > 0 { message = localizedCount("export.skippedUnsupportedCount", export.skipped) }
+        } catch { self.error = error.localizedDescription }
     }
 
     func exportWorkspace() {

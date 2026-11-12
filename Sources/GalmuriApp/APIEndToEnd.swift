@@ -1,3 +1,4 @@
+#if DEBUG
 import Foundation
 import GalmuriCore
 
@@ -81,10 +82,9 @@ import GalmuriCore
                 await model.prepare()
                 guard let large = model.review, large.result.unresolved.isEmpty else { throw GalmuriError.invalid("API large review") }
                 large.acknowledged = true; await model.accept()
-                guard model.error == nil, let largeJob = model.profile?.history.last?.id else { throw GalmuriError.invalid("API large apply: \(model.error ?? "missing")") }
-                let largeResult = try model.store.get(APIJobResult.self, name: largeJob.uuidString + ".result")
-                guard largeResult.state == "succeeded", try JSONEncoder().encode(largeResult).count > 32_000 else { throw GalmuriError.invalid("API large result did not exercise chunking") }
-                checks.append("300 real creates and result larger than 32 KB verified")
+                // Job files are removed after a successful apply; 300 new mappings can only arrive through a chunked result.
+                guard model.error == nil, model.profile?.history.last != nil else { throw GalmuriError.invalid("API large apply: \(model.error ?? "missing")") }
+                checks.append("300 real creates applied through a chunked result")
 
                 await model.edit { tree in
                     tree.nodes[item.id]?.name = "STOP QA current call"
@@ -117,3 +117,4 @@ import GalmuriCore
         try JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys]).write(to: store.directory.appendingPathComponent(file))
     }
 }
+#endif

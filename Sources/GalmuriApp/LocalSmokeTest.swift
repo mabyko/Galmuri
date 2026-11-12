@@ -5,7 +5,9 @@ import GalmuriCore
 @MainActor
 enum LocalSmokeTest {
     static func run(store: AppStore) async throws {
+        #if DEBUG
         if AppArguments.apiSmoke { try await APIEndToEnd.run(store: store); return }
+        #endif
         if AppArguments.onboardingSmoke {
             try await Task.sleep(for: .milliseconds(700))
             guard store.workspace.profiles.isEmpty, store.selectedProfileID == nil,
@@ -113,7 +115,7 @@ enum LocalSmokeTest {
         let originalSource = try Data(contentsOf: fp.source)
         await feature.refreshProfile()
         guard let refresh = feature.review, refresh.result?.unresolved.isEmpty == false else { throw GalmuriError.invalid("refresh smoke conflict") }
-        for conflict in refresh.result!.conflicts { feature.resolve(conflict.id, side: .ours, in: refresh) }
+        for conflict in refresh.result!.conflicts { await feature.resolve(conflict.id, side: .ours, in: refresh) }
         refresh.acknowledged = true; await feature.acceptRefresh(refresh)
         guard refresh.phase == .complete, refresh.localArchive != nil,
               feature.tree?.nodes[link.id]?.name == "Local smoke edit" else { throw GalmuriError.invalid("refresh smoke acceptance") }

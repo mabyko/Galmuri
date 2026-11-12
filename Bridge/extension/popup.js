@@ -21,7 +21,8 @@ connect.addEventListener('click', async () => {
 check.addEventListener('click', async () => { check.disabled = true; try {
   const result = await client.status();
   if (result.status === 'verified' && !apiRunning) { apiRunning = true; check.disabled = true;
-    runAPI(client, chrome.bookmarks, chrome.storage.local, () => !!client.port, state => { document.getElementById('status').textContent = text[state]; }).catch(() => { client.disconnect(); changed(null); }).finally(() => { apiRunning = false; });
+    runAPI(client, chrome.bookmarks, chrome.storage.local, () => !!client.port, state => { document.getElementById('status').textContent = text[state]; }).catch(error => { client.disconnect(); changed(null); document.getElementById('status').textContent = error.message?.startsWith('snapshot-') ? text.snapshotFailed : text.interrupted; document.getElementById('code').textContent = error.message; })
+      .finally(() => { apiRunning = false; if (client.port) { client.disconnect(); changed(null); } });
   }
 } catch { changed(null); } });
 disconnect.addEventListener('click', () => { client.disconnect(); changed(null); });

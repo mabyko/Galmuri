@@ -16,7 +16,8 @@ const strings = {
     "launch": "Open connection page",
     "ready": "Connected · ready for requests from Galmuri",
     "working": "Processing the reviewed request…",
-    "interrupted": "Operation interrupted. Review the current Chrome state in Galmuri."
+    "interrupted": "Operation interrupted. Review the current Chrome state in Galmuri.",
+    "snapshotFailed": "A bookmark could not be read for the connection because it is too long or unsupported."
   },
   "ko": {
     "title": "Galmuri Chrome 연결",
@@ -35,7 +36,8 @@ const strings = {
     "launch": "연결 페이지 열기",
     "ready": "연결됨 · Galmuri 요청 대기 중",
     "working": "검토한 요청 처리 중…",
-    "interrupted": "작업이 중단되었습니다. Galmuri에서 Chrome의 현재 상태를 검토하세요."
+    "interrupted": "작업이 중단되었습니다. Galmuri에서 Chrome의 현재 상태를 검토하세요.",
+    "snapshotFailed": "북마크가 너무 길거나 지원되지 않는 형식이어서 연결에 사용할 수 없습니다."
   },
   "ja": {
     "title": "Galmuri Chrome 接続",
@@ -54,7 +56,8 @@ const strings = {
     "launch": "接続ページを開く",
     "ready": "接続済み · Galmuri からの要求待ち",
     "working": "確認済みの要求を処理中…",
-    "interrupted": "操作が中断されました。Galmuri で現在の Chrome の状態を確認してください。"
+    "interrupted": "操作が中断されました。Galmuri で現在の Chrome の状態を確認してください。",
+    "snapshotFailed": "長すぎるか対応していないブックマークがあるため、接続用に読み込めませんでした。"
   },
   "zh-Hans": {
     "title": "Galmuri Chrome 连接",
@@ -73,7 +76,8 @@ const strings = {
     "launch": "打开连接页面",
     "ready": "已连接 · 等待 Galmuri 请求",
     "working": "正在处理已检查的请求…",
-    "interrupted": "操作已中断。请在 Galmuri 中检查 Chrome 的当前状态。"
+    "interrupted": "操作已中断。请在 Galmuri 中检查 Chrome 的当前状态。",
+    "snapshotFailed": "有书签过长或不受支持，无法为此连接读取。"
   }
 };
 export function copy(language) { return strings[language.startsWith("ko") ? "ko" : language.startsWith("ja") ? "ja" : language.startsWith("zh") ? "zh-Hans" : "en"]; }

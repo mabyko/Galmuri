@@ -11,7 +11,7 @@ import GalmuriCore
         return store
     }
 
-    func testFileExperimentRequiresPendingOwnedSupportedSourceAndPreservesWork() throws {
+    func testFileExperimentRequiresPendingOwnedSupportedSourceAndPreservesWork() async throws {
         let store = fixture()
         XCTAssertNil(store.fileApplyExperimentReview())
         let item = try XCTUnwrap(store.tree?.nodes.values.first { $0.url != nil })
@@ -23,7 +23,7 @@ import GalmuriCore
         XCTAssertNil(store.review)
         XCTAssertEqual(try Data(contentsOf: store.workspaceURL), before)
         XCTAssertEqual(try Data(contentsOf: source), original)
-        store.loadReview(session)
+        await store.loadReview(session)
         XCTAssertEqual(session.phase, .exit); XCTAssertNil(session.latest)
         XCTAssertEqual(try Data(contentsOf: source), original)
     }

@@ -22,6 +22,7 @@ struct RootView: View {
     @State private var resetting: WorkingCopyReset?
     @State private var managingProfiles = false
     @State private var bookmarkDrag: BookmarkDrag?
+    @State private var tableLocation: String?
     @FocusState private var searchFocused: Bool
 
     var body: some View {
@@ -158,7 +159,8 @@ struct RootView: View {
     }
 
     private var editorContent: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        let rows = store.rows, changedIDs = store.profile?.changedIDs ?? []
+        return VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 10) {
                 if store.folder != nil { folderBreadcrumbs }
                 HStack(spacing: 10) {
@@ -167,8 +169,8 @@ struct RootView: View {
                     Spacer()
                 }
                 HStack(spacing: 18) {
-                    Label { Text(localizedCount("editor.bookmarkCount", store.rows.filter { !$0.isFolder }.count)) } icon: { EmptyView() }
-                    Text(localizedCount("editor.changeCount", store.pendingCount))
+                    Label { Text(localizedCount("editor.bookmarkCount", rows.filter { !$0.isFolder }.count)) } icon: { EmptyView() }
+                    Text(localizedCount("editor.changeCount", changedIDs.count))
                 }.font(.caption).foregroundStyle(.secondary)
             }
             if let p = store.profile {
@@ -194,9 +196,9 @@ struct RootView: View {
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 12)
                     Button("editor.revertSelected") { resetting = store.revertRequest(for: store.selection) }
-                        .disabled(store.selection.isEmpty || !store.selection.isSubset(of: store.profile?.changedIDs ?? []))
+                        .disabled(store.selection.isEmpty || !store.selection.isSubset(of: changedIDs))
                     Button("editor.discardAll", systemImage: "arrow.counterclockwise") { resetting = store.resetRequest() }
-                        .disabled(store.pendingCount == 0).accessibilityIdentifier("discard-all-changes")
+                        .disabled(changedIDs.isEmpty).accessibilityIdentifier("discard-all-changes")
                 }
             }
             HStack {
@@ -205,10 +207,10 @@ struct RootView: View {
                 }.buttonStyle(.plain).help(L("editor.search")).accessibilityLabel(L("editor.search"))
                     .keyboardShortcut("f", modifiers: .command)
                 TextField("editor.search", text: $store.search).textFieldStyle(.plain).accessibilityIdentifier("bookmark-search").focused($searchFocused)
-                Text(localizedCount("editor.resultCount", store.rows.count)).font(.caption).foregroundStyle(.secondary)
+                Text(localizedCount("editor.resultCount", rows.count)).font(.caption).foregroundStyle(.secondary)
             }
             selectionActions
-            bookmarkTable
+            bookmarkTable(rows)
             HStack {
                 Text(store.message ?? L("status.notApplied")).font(.caption).foregroundStyle(.secondary)
                 Spacer()
@@ -287,7 +289,9 @@ struct RootView: View {
         else { store.delete(request) }
     }
 
-    private var bookmarkTable: some View {
+    private var location: String { "\(store.selectedProfileID?.uuidString ?? "")/\(store.navigation)" }
+
+    private func bookmarkTable(_ rows: [Bookmark]) -> some View {
         Table(of: Bookmark.self, selection: $store.selection) {
             TableColumn("editor.name") { node in
                 HStack(spacing: 10) {
@@ -309,7 +313,7 @@ struct RootView: View {
                 else if store.profile?.base.tree.nodes[node.id] == nil { Text("change.added").font(.caption).foregroundStyle(AppTheme.accent) }
                 else if store.profile?.base.tree.nodes[node.id]?.parent != node.parent { Text("change.moved").font(.caption).foregroundStyle(.orange) }
                 else if store.profile?.base.tree.nodes[node.id]?.children != node.children { Text("change.contents").font(.caption).foregroundStyle(AppTheme.accent) }
-                else if store.profile?.changedIDs.contains(node.id) == true { Text("change.edited").font(.caption).foregroundStyle(.blue) }
+                else if store.profile?.base.tree.nodes[node.id] != node { Text("change.edited").font(.caption).foregroundStyle(.blue) }
                 else { Text("—").foregroundStyle(.tertiary) }
             }.width(min: 110, ideal: 140)
             TableColumn("editor.edit") { node in
@@ -320,7 +324,7 @@ struct RootView: View {
                 } else { Text("—").foregroundStyle(.tertiary) }
             }.width(55)
         } rows: {
-            ForEach(store.rows) { node in
+            ForEach(tableLocation == location ? rows : []) { node in
                 if node.isFolder {
                     TableRow(node)
                         .itemProvider { dragProvider(for: node.id) }
@@ -331,6 +335,8 @@ struct RootView: View {
             }
         }
         .tableStyle(.inset(alternatesRowBackgrounds: false))
+        // AppKit re-enters its row-height cache when SwiftUI diffs one location's rows into another's; pass through an empty update instead.
+        .task(id: location) { tableLocation = location }
         .contextMenu(forSelectionType: String.self) { ids in
             if !ids.isEmpty {
                 if store.navigation == "changes" { Button("editor.revertSelected") { resetting = store.revertRequest(for: ids) } }
@@ -362,7 +368,7 @@ struct RootView: View {
         .help(L("editor.dragMoveHelp"))
         .accessibilityHint(L("editor.dragMoveHelp"))
         .overlay {
-            if store.rows.isEmpty {
+            if rows.isEmpty {
                 ContentUnavailableView {
                     Label(store.navigation == "changes" ? "editor.emptyChanges" : "editor.emptyTitle", systemImage: "bookmark")
                 } description: {
@@ -442,14 +448,23 @@ struct BookmarkEditor: View {
         validation = nil
         do {
             guard !title.isEmpty else { throw GalmuriError.invalid("name") }
-            if !request.folder { try BookmarkTree.validateEditableURL(address) }
+            // An unchanged URL may be non-web (javascript:, chrome://, file://); only a new or changed URL is validated.
+            if !request.folder, request.item.flatMap({ originalWorking?.nodes[$0]?.url }) != address { try BookmarkTree.validateEditableURL(address) }
             guard let editingProfileID, let originalWorking else { return }
             let saved = store.edit(profileID: editingProfileID, expectedWorking: originalWorking) { tree in
-                if let id = request.item { try tree.edit(id, name: title, url: request.folder ? nil : address) }
+                if let id = request.item { try Self.edit(&tree, id: id, name: title, url: request.folder ? nil : address) }
                 else { _ = try tree.add(name: title, url: request.folder ? nil : address, to: parent) }
             }
             if saved { dismiss() }
         } catch { validation = localizedAppMessage(error.localizedDescription) }
+    }
+
+    /// Renames only when the URL is unchanged, so existing non-web URLs stay editable as in the API editor.
+    static func edit(_ tree: inout BookmarkTree, id: String, name: String, url: String?) throws {
+        guard let url, tree.nodes[id]?.url == url else { return try tree.edit(id, name: name, url: url) }
+        guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw GalmuriError.invalid("name") }
+        guard !tree.roots.values.contains(id) else { throw GalmuriError.invalid("protected root") }
+        tree.nodes[id]?.name = name
     }
 }
 

@@ -98,10 +98,12 @@ public enum ProfileIO {
         try BookmarkFile(data: readData(url, limit: bookmarkReadLimit))
     }
 
-    static func readData(_ url: URL, limit: Int) throws -> Data {
+    /// Local file URL with no symlinked component → its physical path; otherwise `.permission` (or the `realpath` POSIX error).
+    static func verifiedRealPath(_ url: URL) throws -> String {
         let normalized = url.standardizedFileURL
         guard url.isFileURL, url.host == nil || url.host == "localhost",
               normalized.path == normalized.resolvingSymlinksInPath().path else { throw GalmuriError.permission }
+        // Foundation retains system aliases such as /var; resolve those before a no-symlink open.
         guard let path = realpath(normalized.path, nil) else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
         defer { free(path) }
         var expectedPath = normalized.path
@@ -111,7 +113,13 @@ public enum ProfileIO {
                 break
             }
         }
-        guard String(cString: path) == expectedPath else { throw GalmuriError.permission }
+        let real = String(cString: path)
+        guard real == expectedPath else { throw GalmuriError.permission }
+        return real
+    }
+
+    static func readData(_ url: URL, limit: Int) throws -> Data {
+        let path = try verifiedRealPath(url)
         let fd = open(path, O_RDONLY | O_NOFOLLOW_ANY | O_NONBLOCK | O_CLOEXEC)
         guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
         let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
@@ -132,14 +140,20 @@ public enum ProfileIO {
     }
 
     public static func exportHTML(_ tree: BookmarkTree, under folder: String? = nil) throws -> Data {
+        try exportHTMLSkippingUnsupported(tree, under: folder).data
+    }
+
+    /// Bookmarks whose scheme is not http/https (bookmarklets, browser-internal pages) are left out and counted.
+    public static func exportHTMLSkippingUnsupported(_ tree: BookmarkTree, under folder: String? = nil) throws -> (data: Data, skipped: Int) {
         try tree.validate()
+        var skipped = 0
         func escape(_ text: String) -> String {
             text.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "\"", with: "&quot;").replacingOccurrences(of: "<", with: "&lt;").replacingOccurrences(of: ">", with: "&gt;")
         }
         func nodeHTML(_ id: String) throws -> String {
             let n = tree.nodes[id]!
             if let url = n.url {
-                guard let scheme = URL(string: url)?.scheme?.lowercased(), ["http", "https"].contains(scheme) else { throw GalmuriError.unsupported("HTML export contains a URL scheme that requires review") }
+                guard let scheme = URL(string: url)?.scheme?.lowercased(), ["http", "https"].contains(scheme) else { skipped += 1; return "" }
                 return "<DT><A HREF=\"\(escape(url))\">\(escape(n.name))</A>\n"
             }
             return "<DT><H3>\(escape(n.name))</H3>\n<DL><p>\n" + (try n.children.map(nodeHTML).joined()) + "</DL><p>\n"
@@ -148,6 +162,6 @@ public enum ProfileIO {
         if let folder { guard tree.nodes[folder]?.isFolder == true else { throw GalmuriError.invalid("export folder") }; ids = tree.nodes[folder]!.children }
         else { ids = tree.orderedRoots }
         let html = "<!DOCTYPE NETSCAPE-Bookmark-file-1>\n<META HTTP-EQUIV=\"Content-Type\" CONTENT=\"text/html; charset=UTF-8\">\n<TITLE>Galmuri bookmarks</TITLE>\n<H1>Bookmarks</H1>\n<DL><p>\n" + (try ids.map(nodeHTML).joined()) + "</DL><p>\n"
-        return Data(html.utf8)
+        return (Data(html.utf8), skipped)
     }
 }

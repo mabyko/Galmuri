@@ -38,6 +38,63 @@ final class AppStoreVerificationTests: XCTestCase {
     }
 
     @MainActor
+    func testHTMLExportSkipsUnsupportedAddressesAndReportsCount() throws {
+        let store = store(), item = try XCTUnwrap(store.tree?.nodes.values.first { $0.url != nil })
+        store.workspace.profiles[0].working.nodes[item.id]?.url = "javascript:alert(1)"
+        let url = store.directory.appendingPathComponent("export.html")
+        store.exportHTML(to: url)
+        XCTAssertNil(store.error)
+        XCTAssertFalse(try String(contentsOf: url, encoding: .utf8).contains("javascript:"))
+        XCTAssertEqual(store.message, localizedCount("export.skippedUnsupportedCount", 1))
+    }
+
+    @MainActor
+    func testNoOpEditIsNotSavedAndUndoHistoryIsCapped() throws {
+        let store = store(), id = try XCTUnwrap(store.selectedProfileID)
+        let item = try XCTUnwrap(store.tree?.nodes.values.first { $0.url != nil })
+        let saved = try Data(contentsOf: store.workspaceURL)
+        store.message = nil
+        XCTAssertTrue(store.edit { _ in })
+        XCTAssertFalse(store.canUndo); XCTAssertNil(store.message)
+        XCTAssertEqual(try Data(contentsOf: store.workspaceURL), saved)
+        for i in 0..<105 { XCTAssertTrue(store.edit { try $0.edit(item.id, name: "Edit \(i)", url: item.url) }) }
+        XCTAssertEqual(store.undoStacks[id]?.count, 100)
+        XCTAssertEqual(store.undoStacks[id]?.first?.nodes[item.id]?.name, "Edit 4")
+        XCTAssertEqual(store.undoStacks[id]?.last?.nodes[item.id]?.name, "Edit 103")
+    }
+
+    @MainActor
+    func testArchivePruningKeepsTenNewestRefreshSnapshotsAndNeverDeletesRemovedWork() async throws {
+        let store = store(), fm = FileManager.default
+        func write(_ name: String, age: TimeInterval) throws -> URL {
+            let url = store.directory.appendingPathComponent(name)
+            try Data("{}".utf8).write(to: url)
+            try fm.setAttributes([.modificationDate: Date(timeIntervalSince1970: age)], ofItemAtPath: url.path)
+            return url
+        }
+        let old = try (0..<12).map { try write("BeforeRefresh-" + UUID().uuidString + ".json", age: TimeInterval(1_000 + $0)) }
+        let removedWork = try (0..<12).flatMap { i in
+            try ["Disconnected-", "workspace-before-import-"].map { try write($0 + UUID().uuidString + ".json", age: TimeInterval(i)) }
+        }
+        let unrelated = try ["BeforeRefresh-not-a-uuid.json", "BeforeRefresh-" + UUID().uuidString.lowercased() + ".json"].map { try write($0, age: 0) }
+        let folder = store.directory.appendingPathComponent("BeforeRefresh-" + UUID().uuidString + ".json")
+        try fm.createDirectory(at: folder, withIntermediateDirectories: false)
+        let p = try XCTUnwrap(store.profile), item = try XCTUnwrap(p.base.tree.nodes.values.first { $0.url != nil })
+        var tree = p.base.tree
+        try tree.edit(item.id, name: "Browser edit", url: item.url)
+        try p.base.serialize(tree).write(to: p.source, options: .atomic)
+        await store.refreshProfile()
+        let session = try XCTUnwrap(store.review)
+        session.acknowledged = true; await store.acceptRefresh(session)
+        let archive = try XCTUnwrap(session.localArchive)
+        XCTAssertTrue(fm.fileExists(atPath: archive.path))
+        XCTAssertEqual(old.filter { fm.fileExists(atPath: $0.path) }, Array(old.suffix(9)))
+        store.review = nil
+        let disconnected = try XCTUnwrap(store.removeProfile(ProfileRemoval(profile: XCTUnwrap(store.profile))))
+        for url in unrelated + removedWork + [folder, disconnected] { XCTAssertTrue(fm.fileExists(atPath: url.path)) }
+    }
+
+    @MainActor
     func testFailedPersistenceRollsBackEditAndKeepsUndoRetryable() throws {
         let store = store(), profile = try XCTUnwrap(store.profile)
         let item = try XCTUnwrap(profile.working.nodes.values.first { $0.url != nil })
@@ -65,17 +122,17 @@ final class AppStoreVerificationTests: XCTestCase {
     }
 
     @MainActor
-    func testFailedRereadClearsAllReviewApprovalAndRetainsWorkingCopy() throws {
+    func testFailedRereadClearsAllReviewApprovalAndRetainsWorkingCopy() async throws {
         let store = store(), profile = try XCTUnwrap(store.profile)
         let item = try XCTUnwrap(profile.working.nodes.values.first { $0.url != nil })
         XCTAssertTrue(store.edit { try $0.edit(item.id, name: "Keep pending", url: item.url) })
         let working = store.tree, session = ReviewSession(profileID: profile.id)
-        store.loadReview(session)
+        await store.loadReview(session)
         XCTAssertNotNil(session.result)
         session.acknowledged = true
         session.resolutions = ["obsolete-choice": .ours]
         try FileManager.default.removeItem(at: profile.source)
-        store.loadReview(session)
+        await store.loadReview(session)
         XCTAssertFalse(session.acknowledged)
         XCTAssertTrue(session.resolutions.isEmpty)
         XCTAssertNil(session.latest)

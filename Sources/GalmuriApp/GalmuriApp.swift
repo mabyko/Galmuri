@@ -11,7 +11,6 @@ struct GalmuriApp: App {
                 .tint(AppTheme.accent)
                 .accentColor(AppTheme.accent)
                 .onAppear {
-                    delegate.store = store
                     if AppArguments.smokeTest, AppArguments.workspace != nil { delegate.smokeOnce(store: store) }
                     #if DEBUG
                     if let output = AppArguments.captureDirectory, AppArguments.workspace != nil {
@@ -30,14 +29,13 @@ struct GalmuriApp: App {
             }
         }
         Settings {
-            SettingsView(directory: store.directory, store: store)
+            SettingsView(store: store)
         }
     }
 }
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    weak var store: AppStore?
     private var checking = false
     func smokeOnce(store: AppStore) {
         guard !checking else { return }
@@ -67,7 +65,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 enum AppArguments {
-    static var apiSmoke: Bool { ProcessInfo.processInfo.arguments.contains("--smoke-api") || ProcessInfo.processInfo.arguments.contains("--smoke-api-restart") }
+    /// The API QA harness approves a pairing without a click, so it exists only in Debug builds.
+    static var apiSmoke: Bool {
+        #if DEBUG
+        return ProcessInfo.processInfo.arguments.contains("--smoke-api") || ProcessInfo.processInfo.arguments.contains("--smoke-api-restart")
+        #else
+        return false
+        #endif
+    }
     static var onboardingSmoke: Bool { ProcessInfo.processInfo.arguments.contains("--smoke-onboarding") }
     static var smokeTest: Bool { apiSmoke || onboardingSmoke || ProcessInfo.processInfo.arguments.contains("--smoke-test") }
     static var sampleData: Bool {

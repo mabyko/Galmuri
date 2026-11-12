@@ -13,7 +13,7 @@ struct ReviewView: View {
             HStack {
                 Text(L(session.mode == .refresh ? "refresh.title" : "review.title")).font(.caption).foregroundStyle(.secondary)
                 Text(verbatim: " / \(profile?.name ?? "")").font(.caption).foregroundStyle(.secondary)
-                Spacer(); Button("common.close") { dismiss() }.buttonStyle(.borderless).keyboardShortcut(.cancelAction)
+                Spacer(); Button("common.close") { dismiss() }.buttonStyle(.borderless).keyboardShortcut(.cancelAction).disabled(store.busy)
             }
             if store.error != nil { AppErrorNotice(store: store) }
             switch session.phase {
@@ -33,6 +33,7 @@ struct ReviewView: View {
                 } else { completeContent }
             }
         }.padding(28).frame(minWidth: 780, idealWidth: 860, minHeight: 680, idealHeight: 740)
+        .interactiveDismissDisabled(store.busy)
         .onAppear { headingFocused = true }
         .onChange(of: session.phase) { headingFocused = true }
     }
@@ -52,7 +53,7 @@ struct ReviewView: View {
                 }.padding(14).frame(maxWidth: .infinity, alignment: .leading)
             }
             Spacer()
-            HStack { Button("common.cancel", role: .cancel) { dismiss() }; Spacer(); Button("apply.recheckExit") { store.loadReview(session) }.buttonStyle(.borderedProminent) }
+            HStack { Button("common.cancel", role: .cancel) { dismiss() }.disabled(store.busy); Spacer(); Button("apply.recheckExit") { Task { await store.loadReview(session) } }.buttonStyle(.borderedProminent).disabled(store.busy) }
         }
     }
 
@@ -81,7 +82,8 @@ struct ReviewView: View {
                     }
                 }
                 HStack {
-                    Button("common.back") { session.phase = .exit }
+                    // A refresh has no exit step; Back closes it instead of showing the stale-source notice.
+                    Button("common.back") { if session.mode == .refresh { dismiss() } else { session.phase = .exit } }
                     Spacer()
                     if !result.unresolved.isEmpty { Text(localizedCount("conflict.remainingCount", result.unresolved.count)).foregroundStyle(.orange) }
                     Button("common.continue") { session.phase = .final; session.acknowledged = false }.buttonStyle(.borderedProminent).disabled(!result.unresolved.isEmpty)
@@ -93,14 +95,14 @@ struct ReviewView: View {
     private func choice(_ conflict: MergeConflict, side: MergeSide, title: String, tree: BookmarkTree?) -> some View {
         let selected = session.resolutions[conflict.id] == side
         return VStack(alignment: .leading, spacing: 12) {
-            Button { store.resolve(conflict.id, side: side, in: session) } label: {
+            Button { Task { await store.resolve(conflict.id, side: side, in: session) } } label: {
                 HStack(alignment: .top, spacing: 8) {
                     Image(systemName: selected ? "largecircle.fill.circle" : "circle").accessibilityHidden(true)
                     Text(L(title)).multilineTextAlignment(.leading)
                     Spacer(minLength: 0)
                 }.contentShape(Rectangle())
             }
-            .buttonStyle(.plain).accessibilityAddTraits(selected ? .isSelected : [])
+            .buttonStyle(.plain).disabled(store.busy).accessibilityAddTraits(selected ? .isSelected : [])
             .accessibilityValue(L(selected ? "conflict.selected" : "conflict.notSelected"))
             if conflict.id.hasSuffix(".order") {
                 Text(verbatim: side == .ours ? conflict.ours : conflict.theirs)
@@ -161,8 +163,8 @@ struct ReviewView: View {
                     Button("refresh.accept") { Task { await store.acceptRefresh(session) } }.buttonStyle(.borderedProminent)
                         .disabled(!session.acknowledged || session.result?.unresolved.isEmpty != true)
                 } else {
-                Button("apply.backupAndApply") { store.apply(session) }.buttonStyle(.borderedProminent)
-                    .disabled(!store.labs.fileEnabled || !session.acknowledged || session.result?.unresolved.isEmpty != true || profile.map({ !store.coordinator.canWrite($0.source) || $0.sourceRestriction != nil || session.latest?.writeRestriction != nil }) != false)
+                Button("apply.backupAndApply") { Task { await store.apply(session) } }.buttonStyle(.borderedProminent)
+                    .disabled(store.busy || !store.labs.fileEnabled || !session.acknowledged || session.result?.unresolved.isEmpty != true || profile.map({ !store.coordinator.canWrite($0.source) || $0.sourceRestriction != nil || session.latest?.writeRestriction != nil }) != false)
                 }
             }
         }
@@ -203,6 +205,7 @@ struct RestoreRequest: Identifiable {
 struct BackupsView: View {
     @Bindable var store: AppStore
     @State private var restore: RestoreRequest?
+    @State private var preparing: UUID?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -233,18 +236,30 @@ struct BackupsView: View {
                 if store.error != nil { AppErrorNotice(store: store) }
                 ScrollView { ChangeReviewList(before: request.current, after: request.backup) }
                 Text("backup.currentPreserved").font(.caption).foregroundStyle(.secondary)
-                HStack { Button("common.cancel", role: .cancel) { restore = nil }.keyboardShortcut(.cancelAction); Spacer(); Button("backup.backupCurrentAndRestore") { store.error = nil; store.restore(request.receipt, expectedHash: request.currentHash, expectedIdentity: request.currentIdentity); if store.error == nil { restore = nil } }.buttonStyle(.borderedProminent) }
+                HStack { Button("common.cancel", role: .cancel) { restore = nil }.keyboardShortcut(.cancelAction).disabled(store.busy); Spacer(); Button("backup.backupCurrentAndRestore") { Task { store.error = nil; if await store.restore(request.receipt, expectedHash: request.currentHash, expectedIdentity: request.currentIdentity) { restore = nil } } }.buttonStyle(.borderedProminent).disabled(store.busy) }
             }.padding(25).frame(minWidth: 700, idealWidth: 780, minHeight: 580, idealHeight: 680)
+            .interactiveDismissDisabled(store.busy)
         }
     }
 
     private func prepare(_ receipt: BackupReceipt) {
-        do {
-            let reviewed = try store.coordinator.readForReview(receipt.source)
-            let current = reviewed.file
-            let backup = try BookmarkFile(data: Data(contentsOf: receipt.backup))
-            guard BookmarkFile.hash(backup.original) == receipt.beforeHash else { throw GalmuriError.missingBackup }
-            restore = RestoreRequest(receipt: receipt, currentHash: current.fingerprint, currentIdentity: reviewed.identity, current: current.tree, backup: backup.tree)
-        } catch { store.error = error.localizedDescription }
+        let token = UUID(), coordinator = store.coordinator
+        preparing = token
+        Task {
+            do {
+                let request = try await Task.detached { () throws -> RestoreRequest in
+                    let reviewed = try coordinator.readForReview(receipt.source)
+                    let current = reviewed.file
+                    let backup = try BookmarkFile(data: Data(contentsOf: receipt.backup))
+                    guard BookmarkFile.hash(backup.original) == receipt.beforeHash else { throw GalmuriError.missingBackup }
+                    return RestoreRequest(receipt: receipt, currentHash: current.fingerprint, currentIdentity: reviewed.identity, current: current.tree, backup: backup.tree)
+                }.value
+                guard preparing == token else { return }
+                restore = request
+            } catch {
+                guard preparing == token else { return }
+                store.error = error.localizedDescription
+            }
+        }
     }
 }

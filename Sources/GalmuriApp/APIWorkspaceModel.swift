@@ -64,7 +64,6 @@ final class APIReview: Identifiable {
 final class APIWorkspaceModel {
     var workspace = APIWorkspace()
     var selected: UUID?
-    var sessions: [BridgeProof] = []
     var sources: [APIEnvelope] = []
     var review: APIReview?
     var adoption: APIAdoption?
@@ -84,19 +83,24 @@ final class APIWorkspaceModel {
         proof = BridgeProofStore(workspace: directory, variant: variant)
     }
     func load() async {
-        guard !busy else { return }; busy = true; defer { busy = false; stopping = false }
+        guard !busy else { return }; busy = true; defer { finish() }
         do {
             let source = store, approvals = proof
-            let loaded = try await Task.detached { () -> (APIWorkspace, [BridgeProof], [APIEnvelope]) in
+            let loaded = try await Task.detached { () -> (APIWorkspace, [APIEnvelope]) in
                 let workspace = try source.loadWorkspace(), sessions = try approvals.requests()
                 let values = try sessions.filter { try approvals.approved($0) }.compactMap { try? source.envelope($0) }
-                return (workspace, sessions, values)
+                return (workspace, values)
             }.value
             if workspace.revision != loaded.0.revision { undo = [:] }
-            workspace = loaded.0; sessions = loaded.1; sources = loaded.2
+            workspace = loaded.0; sources = loaded.1
             if !workspace.profiles.contains(where: { $0.id == selected }) { selected = workspace.profiles.first?.id }
             error = nil
         } catch { self.error = error.localizedDescription }
+    }
+    // Stop has no effect on most operations, so a leftover "stopping" notice must not outlive the operation.
+    private func finish() {
+        busy = false; stopping = false
+        if notice == "api.stopping" { notice = nil }
     }
     private func commit(_ candidate: APIWorkspace) async throws {
         let expected = workspace.revision, store = store
@@ -111,7 +115,7 @@ final class APIWorkspaceModel {
         next.profiles[index] = profile; try await commit(next)
     }
     func connect(_ source: APIEnvelope, scope: String) async {
-        guard !busy else { return }; busy = true; defer { busy = false; stopping = false }
+        guard !busy else { return }; busy = true; defer { finish() }
         do {
             guard sources.filter({ $0.session.installationID == source.session.installationID }).count == 1 else { throw GalmuriError.invalid("ambiguous API installation") }
             if let existing = workspace.profiles.first(where: { $0.installationID == source.session.installationID && $0.scope == scope }) { selected = existing.id; return }
@@ -122,16 +126,21 @@ final class APIWorkspaceModel {
     func edit(expected: UUID? = nil, working: BookmarkTree? = nil, _ action: (inout BookmarkTree) throws -> Void) async {
         guard !busy, var profile, profile.pendingJob == nil, review == nil,
               expected == nil || expected == profile.id, working == nil || working == profile.working else { error = GalmuriError.staleSource.localizedDescription; return }
-        busy = true; defer { busy = false; stopping = false }
+        busy = true; defer { finish() }
         error = nil; notice = nil
         do {
             let before = profile.working
-            try profile.edit(action); try await change(profile)
+            try profile.edit(action)
+            guard profile.working != before else { return }
+            try await change(profile)
             undo[profile.id, default: []].append(before)
+            undo[profile.id] = undo[profile.id].map { Array($0.suffix(100)) }
         } catch { self.error = error.localizedDescription }
     }
     func undoEdit() async {
         guard let profile, let previous = undo[profile.id]?.last else { return }
+        // edit skips identical trees without pushing, so removeLast(2) below would underflow.
+        if previous == profile.working { undo[profile.id]?.removeLast(); return }
         await edit(expected: profile.id) { $0 = previous }; if error == nil { undo[profile.id]?.removeLast(2) }
     }
     private func endpoint(_ profile: APIWorkingCopy) throws -> APIEnvelope {
@@ -156,6 +165,8 @@ final class APIWorkspaceModel {
                 try Task.checkCancellation()
                 if stopping && job.command != "apply" { throw CancellationError() }
                 if let result = try? await Task.detached(operation: { try store.get(APIJobResult.self, name: job.id.uuidString + ".result") }).value {
+                    // Snapshot/adopt files are not recovery state; apply files stay until the apply is settled.
+                    if job.command != "apply" { await removeJobFiles(job.id) }
                     guard result.jobID == job.id else { throw GalmuriError.staleSource }
                     let envelope = try await Task.detached { try store.envelope(session) }.value
                     return (result, envelope)
@@ -165,6 +176,7 @@ final class APIWorkspaceModel {
             throw GalmuriError.invalid("API response timed out; inspect interrupted operation")
         } catch {
             if job.command == "apply" { try await Task.detached { try store.requestStop(job) }.value }
+            else { await removeJobFiles(job.id) }
             throw error
         }
     }
@@ -175,7 +187,7 @@ final class APIWorkspaceModel {
     }
     func prepare(restore: Bool = false) async {
         guard !busy, let profile, profile.pendingJob == nil else { return }
-        busy = true; stopping = false; error = nil; notice = nil; defer { busy = false; stopping = false }
+        busy = true; stopping = false; error = nil; notice = nil; defer { finish() }
         do {
             let endpoint = try endpoint(profile)
             let (result, fresh) = try await perform(.refresh(endpoint.session))
@@ -189,7 +201,7 @@ final class APIWorkspaceModel {
     }
     func resolve(_ id: String, side: MergeSide) async {
         guard !busy, let review else { return }
-        busy = true; defer { busy = false; stopping = false }
+        busy = true; defer { finish() }
         do {
             review.resolutions[id] = side; review.acknowledged = false
             let base = review.mergeBase, ours = review.ours, theirs = review.theirs, choices = review.resolutions
@@ -202,7 +214,7 @@ final class APIWorkspaceModel {
         guard !busy, let review, review.acknowledged, review.result.unresolved.isEmpty,
               var profile, profile.id == review.profile.id, profile.base == review.profile.base,
               profile.working == review.profile.working, profile.pendingJob == nil else { return }
-        busy = true; stopping = false; error = nil; notice = nil; defer { busy = false; stopping = false }
+        busy = true; stopping = false; error = nil; notice = nil; defer { finish() }
         do {
             let endpoint = try endpoint(profile)
             guard endpoint.session == review.envelope.session else { throw GalmuriError.staleSource }
@@ -213,6 +225,8 @@ final class APIWorkspaceModel {
                 profile.base = review.theirs; profile.working = review.result.tree; profile.mapping = review.mapping
                 try await change(profile); self.review = nil; undo[profile.id] = []; return
             }
+            // The host withholds apply jobs with under 90 s left; refuse before recovery files or pendingJob exist.
+            guard endpoint.session.expires.timeIntervalSinceNow >= 120 else { throw GalmuriError.invalid("API connection expires soon; reconnect in Chrome and review again") }
             var staged = profile; staged.mapping = review.mapping
             var job = try staged.job(envelope: review.envelope, target: review.result.tree)
             job.owner = try APIOwner.read()
@@ -237,14 +251,23 @@ final class APIWorkspaceModel {
             let after = try fresh.snapshot.tree(scope: staged.scope, mapping: &staged.mapping, excluding: staged.recoveryIDs)
             guard after == review.result.tree else { throw GalmuriError.invalid("API final snapshot mismatch") }
             staged.history.append(APICheckpoint(id: job.id, before: review.theirs, after: after))
-            staged.history = Array(staged.history.suffix(100)); staged.base = after; staged.working = after; staged.pendingJob = nil
+            staged.history = Array(staged.history.suffix(1)); staged.base = after; staged.working = after; staged.pendingJob = nil
             try await change(staged); self.review = nil; undo[staged.id] = []; notice = "api.applied"
+            await removeJobFiles(job.id)
         } catch is CancellationError { notice = "api.stopped"; self.review = nil }
         catch { self.error = error.localizedDescription; self.review = nil }
     }
+    // Best effort once the job is cleared; .archive/.interrupted copies carry their own UUIDs and are kept.
+    private func removeJobFiles(_ job: UUID) async {
+        let store = store, prefix = job.uuidString + "."
+        await Task.detached {
+            let names = (try? FileManager.default.contentsOfDirectory(atPath: store.directory.path)) ?? []
+            for name in names where name.hasPrefix(prefix) && name.hasSuffix(".json") { try? store.remove(name: String(name.dropLast(5))) }
+        }.value
+    }
     func prepareAdoption() async {
         guard !busy, let profile, profile.pendingJob != nil else { return }
-        busy = true; stopping = false; error = nil; defer { busy = false; stopping = false }
+        busy = true; stopping = false; error = nil; defer { finish() }
         do {
             let endpoint = try endpoint(profile)
             let (result, fresh) = try await perform(.refresh(endpoint.session))
@@ -255,19 +278,20 @@ final class APIWorkspaceModel {
     func adopt() async {
         guard !busy, var profile, let adoption, adoptionAcknowledged, profile.id == adoption.profile.id,
               profile.pendingJob == adoption.profile.pendingJob, profile.working == adoption.profile.working, profile.base == adoption.profile.base else { return }
-        busy = true; stopping = false; error = nil; defer { busy = false; stopping = false }
+        busy = true; stopping = false; error = nil; defer { finish() }
         do {
             let endpoint = try endpoint(profile)
             guard endpoint.session == adoption.envelope.session else { throw GalmuriError.staleSource }
             let fresh = adoption.envelope
             try store.put(profile, name: UUID().uuidString + ".interrupted")
-            let job = APIJob.adopt(fresh)
+            let job = APIJob.adopt(fresh), stale = profile.pendingJob
             let (result, confirmed) = try await perform(job)
             guard result.state == "succeeded", confirmed.raw == fresh.raw else { throw GalmuriError.staleSource }
             profile.recoveryIDs = adoption.recoveryIDs; profile.mapping = adoption.mapping
             profile.base = adoption.tree
             profile.working = profile.base; profile.pendingJob = nil; try await change(profile)
             undo[profile.id] = []; notice = "api.adopted"; self.adoption = nil
+            if let stale { await removeJobFiles(stale) }
         } catch { self.error = error.localizedDescription }
     }
 }
