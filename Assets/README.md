@@ -11,3 +11,5 @@ The original images were created for this project using the built-in image-gener
 Run `python3 scripts/generate-icons.py` after an intentional master change. It reads the catalog's slot sizes/scales and resizes with macOS `sips`; it never edits the masters. `scripts/package-app.py` selects the configuration's primary icon through `actool --app-icon` and merges the compiler's generated Info.plist keys. This SwiftPM project has no Xcode project settings to override.
 
 Both configurations compile without asset warnings. Masters and representative 128px/32px previews were inspected: the bookmark remains recognizable and the blue development badge is distinct. Prompt text is recorded in [AppIcon-masters/prompts.json](AppIcon-masters/prompts.json).
+
+On 2026-11-12 faint stray pixels left outside the tile by background removal were cleared from both masters and every slot was regenerated.

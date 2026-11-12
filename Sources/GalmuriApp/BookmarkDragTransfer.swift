@@ -2,7 +2,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 extension UTType {
-    static let galmuriBookmarkMove = UTType(exportedAs: "app.galmuri.bookmark-move", conformingTo: .data)
+    static let galmuriBookmarkMove = UTType(exportedAs: "forked.galmuri.local.bookmark-move", conformingTo: .data)
 }
 
 struct BookmarkMoveData: Transferable {

@@ -7,7 +7,7 @@ struct ProfileWelcomeView: View {
 
     var body: some View {
         VStack(spacing: 22) {
-            Image(systemName: "bookmark.square").font(.system(size: 58, weight: .light)).foregroundStyle(.brown)
+            Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 72, height: 72).accessibilityHidden(true)
                 .accessibilityHidden(true)
             Text("profile.welcomeTitle").font(.largeTitle.bold())
             Text("profile.welcomeDetail").font(.title3).foregroundStyle(.secondary)

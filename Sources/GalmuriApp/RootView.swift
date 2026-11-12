@@ -74,7 +74,7 @@ struct RootView: View {
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 10) {
-                Image(systemName: "bookmark.square.fill").font(.system(size: 30, weight: .light)).foregroundStyle(AppTheme.accent)
+                Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 38, height: 38).accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 1) { Text(verbatim: "Galmuri").font(.title3.bold()); Text(L(Bundle.main.object(forInfoDictionaryKey: "GalmuriBuildConfiguration") as? String == "release" ? "app.localPreview" : "app.localDevelopment")).font(.caption2).foregroundStyle(.secondary) }
             }.padding(.horizontal, 18).padding(.top, 20)
             VStack(alignment: .leading, spacing: 8) {
