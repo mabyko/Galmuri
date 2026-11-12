@@ -1,6 +1,6 @@
 # 0005 — Local encrypted-store adapter boundary
 
-Historical bounded experiment accepted 2026-10-24. **Further implementation deferred by the maintainer on 2026-10-25.** The native app exposes only a disabled “Planned” item in Settings → Labs, with no activation preference or Keychain access. The disconnected core experiment's source was removed on 2026-11-12 (local recovery copy: `build/removed-encrypted-store-2026-11-12.tar.gz`); its recorded findings and the conditions below are retained as historical design evidence, not active implementation work.
+Historical bounded experiment accepted 2026-10-24. **Further implementation deferred by the maintainer on 2026-10-25.** The native app exposes only a disabled “Planned” item in Settings → Labs, with no activation preference or Keychain access. The disconnected core experiment's source was removed on 2026-11-12 (it remains in the repository history, in the initial commit); its recorded findings and the conditions below are retained as historical design evidence, not active implementation work.
 
 Chromium tag `153.0.8010.52` resolves to commit `78e5e45d4bb41035e17ea4da2cc257f496416ac9`. Its macOS key provider uses a `v10` AES-128-CBC envelope, PBKDF2-HMAC-SHA1 with the browser's existing password, and fixed parameters. Implement that compatibility path with system CommonCrypto; do not create a different encryption format or infer key material from file paths. Context7 had no CommonCrypto coverage; the installed Apple SDK headers and pinned Chromium implementation establish the API/format details.
 

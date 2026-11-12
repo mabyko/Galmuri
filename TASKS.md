@@ -2,7 +2,7 @@
 
 This is the single source of truth for milestone and task progress. Specifications explain intended behavior; this file records what is done and what comes next.
 
-**Current focus:** 4.21 complete — audit follow-ups implemented and tested; Release33 installed/verified, saved work/settings preserved, exact Dev/rollback cleanup complete.
+**Current focus:** 5.14 complete — local Git history and public-facing READMEs prepared; Release33 remains installed. The maintainer creates and connects the GitHub repository (5.3).
 
 **Next task:** optional Labs installation/registration and physical acceptance under 4.13, plus broader failure/account/sync gates under 4.12. Real-profile writes, native encryption, publication and new signing privileges remain gated. See [Labs](docs/labs.md).
 
@@ -171,6 +171,7 @@ API-route follow-ups: the maintainer authorized proceeding on 2026-10-28. Start 
 
 These tasks are outside the current implementation/local-test scope. Resume them only when the maintainer requests publication after local review. Task numbers 5.3, 5.5, and 5.6 are retained from the earlier plan to preserve references.
 
+- [x] 5.14 Prepare the tree for publication at the maintainer's request (2026-11-12): local Git history initialized with the pre-audit state and the audit fixes as separate commits, ignore rules extended for local agent state and default export names, tracked files scanned for home paths, identities and credentials (none found), and the four READMEs rewritten as a short public overview with the former status text moved to [release notes](docs/release-notes.md). Creating the GitHub repository and pushing remain with the maintainer under 5.3.
 - [ ] 5.3 Publish the source repository on GitHub; verify hosted issue/PR templates and configure private security reporting. Do not create a repository or push during planning/local testing.
 - [ ] 5.5 Add appropriate hosted CI and public release checks after the repository/publication scope is established.
 - [ ] 5.6 Review name/asset/license provenance, choose public distribution/signing, update documentation to actual support, and publish a native release only after its acceptance criteria pass.

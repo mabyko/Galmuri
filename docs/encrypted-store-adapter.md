@@ -4,7 +4,7 @@
 
 ## Current product decision · 2026-10-25
 
-The maintainer deferred encrypted-bookmark support. Settings → Labs shows only an off, disabled “Planned” placeholder in English, Korean, Japanese and Simplified Chinese. There is no activation preference, Keychain access or native encrypted-store integration. The disconnected experiment's source and synthetic tests (`ChromiumBookmarkCipher`, `ChromiumBookmarkStore`, `ChromiumStoreCoordinator` and their two test files) were removed on 2026-11-12; the findings and evidence below remain as the historical record. A local, unpublished recovery copy is kept at `build/removed-encrypted-store-2026-11-12.tar.gz`. No further encrypted-store implementation is planned in the current scope. Native external writes remain disabled; encrypted-only profiles stay unsupported and mixed stores retain their safety restrictions.
+The maintainer deferred encrypted-bookmark support. Settings → Labs shows only an off, disabled “Planned” placeholder in English, Korean, Japanese and Simplified Chinese. There is no activation preference, Keychain access or native encrypted-store integration. The disconnected experiment's source and synthetic tests (`ChromiumBookmarkCipher`, `ChromiumBookmarkStore`, `ChromiumStoreCoordinator` and their two test files) were removed on 2026-11-12; the findings and evidence below remain as the historical record. The removed source remains in the repository history, in the initial commit. No further encrypted-store implementation is planned in the current scope. Native external writes remain disabled; encrypted-only profiles stay unsupported and mixed stores retain their safety restrictions.
 
 ## Implemented and checked (historical experiment)
 

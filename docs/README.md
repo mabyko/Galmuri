@@ -13,6 +13,7 @@ English is the source of truth for current requirements and implementation statu
 | [Technical validation](technical-validation.md) | Permissions, identity, formats, merge, writes, and recovery |
 | [Local development](local-development.md) | Build, launch, isolated workspaces, and data locations |
 | [Labs](labs.md) | Experimental API/file apply, downloadable extension and installation limits |
+| [Release notes](release-notes.md) | Release-by-release changes and detailed current status |
 | [Localization](localization.md) | English source, four locales, copy, and release validation |
 | [Decision history](decisions.md) | Product discussion outcomes and open questions |
 | [Architecture decisions](adr/README.md) | Durable trade-offs and their consequences |
