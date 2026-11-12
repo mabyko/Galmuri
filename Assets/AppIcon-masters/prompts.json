@@ -1,0 +1,9 @@
+{
+  "tool": "built-in image_gen",
+  "date": "2026-10-23",
+  "transparent_background": true,
+  "prompts": {
+    "release": "Create the primary macOS application icon master for Galmuri, a quiet native bookmark organizer. Single centered icon, square 1024x1024 or higher resolution, with genuine transparent pixels outside the rounded app tile. A warm ivory/off-white rounded-square macOS app tile with a subtle tactile edge; in its center a bold warm ochre/burnished copper bookmark ribbon, with one gently offset paper/ribbon shape behind to suggest gathering bookmarks. Refined restrained native Mac utility aesthetic, extremely simple and clear at 16 pixels, balanced generous internal margins, crisp silhouette, mostly flat with very subtle material shading. Established project motif is a warm copper bookmark on calm neutral surfaces. No words, no lettering, no badge, no busy detail, no borders around the whole image, no extra objects, no mockup, no grid, no multiple icons. This is the release master artwork, ready for an app icon asset catalog.",
+    "dev": "Edit this Galmuri release app icon into its development variant. Preserve exactly the warm ivory rounded-square tile, copper/ochre bookmark ribbon, offset paper ribbon behind, silhouette, size, placement, margins, shading, and transparent exterior. Add a single obvious cobalt-blue rounded badge at the lower-right of the tile with bold clean white letters DEV. Badge occupies about one quarter of the tile width, sits fully inside the tile with a comfortable margin, and is visually distinct even when the icon is small. Do not recolor the main glyph or change its composition. Single icon only. High-resolution square app icon master, transparent outside the tile. Preserve the central opaque artwork."
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "debug": {
+    "nativeHost": "forked.galmuri.local.bridge",
+    "extensionID": "hieifoceiplfgehdamccdijcjicgpibi",
+    "extensionKey": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAo2CexfWG4jJ5my7xIyymw4MMo9v9uFijuSIiZV0mEunvrgudQX4BHfnG8fUkhLrmu8lqLiesLOqWCQ+UdaS5aHUanTNcCctVOD7sxXt6lJi/ioa3ODXJELxsJM+wm060A2AbYRh0bVz5j17rS5+8+eKUzr9p0j7Cq54D0zk/dymXL/Xe2AyIzVMcCmzBaxkA1zMCQS/xJD5ZUzhpjOTNuWTAbJlxwHOlnSXJpC7dPyhRYkpZhshF65IO1p+IdUpaxncm7xeqEP9/OkVg7YX3cjLl636UiG/RGBE6p5Y5rQ3/78VxCwbvnMZnyc1O4iQYv+YuJnNMrDa2Rxk86SCBUQIDAQAB"
+  },
+  "release": {
+    "nativeHost": "forked.galmuri.local.release.bridge",
+    "extensionID": "nmpbmjlhghhjdiaajbcdcofdagjnjcal",
+    "extensionKey": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAl8c7azIUWp6qYJc7tLiSAYrsKkP1qbnN6tITmOiGGDAEZ4qRarfkWKmk6LDjkG02zyM61DfPG0W3rraNFQyznZAFpKOjIyizJ/ms9xOQhyy9Rb0dqGURr2D4kKfbWna4hFf+GvvG627EDzauQynxDsY/A3R2PhP4MwSpTdgWSQw01sI+quGymNfljTW3Uqs8Qq0fZmLy1THdxTtxMtZItHo08Cil9ZZqyHgq1C6r/ogb2Lry2P9o3mBMROUda8xiys+hVSM+zQ512A+wCXHlHoaw0Y4o8niI5gkqwQGjuBjCA/pKBrSlu6sGD+yH6OFUd8SHLl45MKZi+e64yPxKgQIDAQAB"
+  }
+}

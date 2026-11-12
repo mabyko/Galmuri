@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "Galmuri Chrome Bridge",
+  "version": "0.1.0",
+  "minimum_chrome_version": "134",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAl8c7azIUWp6qYJc7tLiSAYrsKkP1qbnN6tITmOiGGDAEZ4qRarfkWKmk6LDjkG02zyM61DfPG0W3rraNFQyznZAFpKOjIyizJ/ms9xOQhyy9Rb0dqGURr2D4kKfbWna4hFf+GvvG627EDzauQynxDsY/A3R2PhP4MwSpTdgWSQw01sI+quGymNfljTW3Uqs8Qq0fZmLy1THdxTtxMtZItHo08Cil9ZZqyHgq1C6r/ogb2Lry2P9o3mBMROUda8xiys+hVSM+zQ512A+wCXHlHoaw0Y4o8niI5gkqwQGjuBjCA/pKBrSlu6sGD+yH6OFUd8SHLl45MKZi+e64yPxKgQIDAQAB",
+  "permissions": [
+    "nativeMessaging",
+    "storage",
+    "bookmarks"
+  ],
+  "action": {
+    "default_popup": "launcher.html"
+  },
+  "options_ui": {
+    "page": "popup.html",
+    "open_in_tab": true
+  }
+}

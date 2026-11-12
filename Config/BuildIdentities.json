@@ -1,0 +1,12 @@
+{
+  "debug": {
+    "bundleIdentifier": "forked.galmuri.local",
+    "displayName": "Galmuri Dev",
+    "appIcon": "AppIcon-Dev"
+  },
+  "release": {
+    "bundleIdentifier": "forked.galmuri.local.release",
+    "displayName": "Galmuri",
+    "appIcon": "AppIcon"
+  }
+}

@@ -1,0 +1,39 @@
+# macOS
+.DS_Store
+._*
+
+# Editors and local agent/runtime state
+.vscode/
+.idea/
+*.swp
+.serena/
+.t3/
+.claude/
+.agents/
+.orca/
+design/orca-share.json
+
+# Swift and Xcode build/user state
+.build/
+.swiftpm/
+/build/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+
+# Script and test tooling caches
+__pycache__/
+*.pyc
+node_modules/
+
+# Local browser data, backups, and credentials must never be published.
+# The last two are the app's default export names and can hold real bookmarks.
+/private/
+/local-data/
+/backups/
+.env
+.env.*
+!.env.example
+galmuri-workspace*.json
+galmuri-bookmarks*.html
